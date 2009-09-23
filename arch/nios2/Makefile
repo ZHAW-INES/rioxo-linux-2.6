@@ -136,7 +136,7 @@ endif
 quiet_cmd_gen_mk = '  RUNNING $@'
 define cmd_gen_mk
 	mkdir -p $(dir $(objtree)/$(HARDWARE_MK)); \
-	perl -I$(TOPDIR)/arch/$(ARCH)/scripts \
+	perl -I$(srctree)/arch/$(ARCH)/scripts \
 		$(srctree)/arch/$(ARCH)/scripts/hwselect.pl $(SYSPTF) \
 		$(objtree)/$(HARDWARE_MK)
 endef
@@ -145,28 +145,27 @@ endef
 hwselect:
 	@echo $($(quiet)cmd_gen_mk);
 	@$(cmd_gen_mk)	
-	
+
 archprepare: include/asm-nios2/nios2.h
 
 archclean:
 	@$(MAKE) $(clean)=arch/$(ARCH)/boot
 
 define filechk_nios2.h
-	# call perl script that will build nios2.h file
-	perl -I$(TOPDIR)/arch/$(ARCH)/scripts \
-	  $(TOPDIR)/arch/$(ARCH)/scripts/gen_nios2.h.pl $(CPU) $(EXEMEM) $(UPLMEM)
+	perl -I$(srctree)/arch/$(ARCH)/scripts \
+	  $(srctree)/arch/$(ARCH)/scripts/gen_nios2.h.pl $(CPU) $(EXEMEM) $(UPLMEM)
 endef
 
 include/asm-nios2/nios2.h: $(SYSPTF) FORCE
 	$(call filechk,nios2.h)
 
 quiet_cmd_touch = '  TOUCH   $@'
-      cmd_touch = touch $(TOPDIR)/$@
-	
+      cmd_touch = touch $(srctree)/$@
+
 arch/$(ARCH)/kernel/vmlinux.lds.S: FORCE
 	@echo $($(quiet)cmd_touch);
 	@$(cmd_touch)
-	
+
 linuxsrec: linux
 	$(OBJCOPY) -O srec $(LINUX) linux.srec
 
