@@ -107,6 +107,6 @@ extern unsigned long memory_end;
 
 #endif /* __ASSEMBLY__ */
 
-#include <asm-generic/page.h>
+#include <asm-generic/getorder.h>
 
 #endif /* _NIOS2_PAGE_H */

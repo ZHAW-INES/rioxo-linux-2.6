@@ -4,6 +4,6 @@
 #define SYS_IRQS	32
 #define NR_IRQS		SYS_IRQS
 
-#define irq_canonicalize(irq)	(irq)
+#include <asm-generic/irq.h>
 
 #endif /* __NIOS2_IRQ_H_ */

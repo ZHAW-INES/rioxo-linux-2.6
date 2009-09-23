@@ -109,4 +109,6 @@ extern inline void flush_pages_to_ram (unsigned long address, int n)
 #define arch_leave_lazy_cpu_mode()	do {} while (0)
 #define arch_flush_lazy_cpu_mode()	do {} while (0)
 
+#include <asm-generic/pgtable.h>
+
 #endif /* _NIOS_PGTABLE_H */

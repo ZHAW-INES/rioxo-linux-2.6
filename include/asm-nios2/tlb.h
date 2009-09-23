@@ -1,35 +1,16 @@
-#ifndef __NIOS_TLB_H__
-#define __NIOS_TLB_H__
+#ifndef _ASM_NIOS2_TLB_H
+#define _ASM_NIOS2_TLB_H
 
-/*--------------------------------------------------------------------
- *
- * include/asm-nios2/tlb.h
- *
- * Derived from various works, Alpha, ix86, M68K, Sparc, ...et al
- *
- *  Copyright (C) 2003  Microtronix Datacom Ltd
- *  Copyright (C) 2002  NEC Corporation
- *  Copyright (C) 2002  Miles Bader <miles@gnu.org>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- *
- * Written by Miles Bader <miles@gnu.org>
- * Jan/20/2004		dgt	    NiosII
- *
- ---------------------------------------------------------------------*/
+#define tlb_start_vma(tlb, vma)	do { } while (0)
+#define tlb_end_vma(tlb, vma)	do { } while (0)
+#define __tlb_remove_tlb_entry(tlb, ptep, address)	do { } while (0)
 
-#define tlb_flush(tlb)	((void)0)
+/*
+ * .. because we flush the whole mm when it
+ * fills up.
+ */
+#define tlb_flush(tlb)		flush_tlb_mm((tlb)->mm)
 
 #include <asm-generic/tlb.h>
 
-#endif /* __NIOS_TLB_H__ */
-
+#endif

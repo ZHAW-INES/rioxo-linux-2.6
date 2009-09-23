@@ -44,7 +44,6 @@
  */
 #define current_text_addr() ({ __label__ _l; _l: &&_l;})
 
-#include <linux/a.out.h>
 #include <linux/string.h>
 
 #include <asm/ptrace.h>
@@ -99,8 +98,6 @@ struct thread_struct {
 	/* Flags are defined below */
 
 	unsigned long flags;
-	int current_ds;
-	struct exec core_exec;     /* just what it says. */
 };
 
 #define INIT_MMAP { &init_mm, (0), (0), \
