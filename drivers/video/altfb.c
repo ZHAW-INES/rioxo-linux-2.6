@@ -79,16 +79,6 @@ static struct fb_fix_screeninfo altfb_fix __initdata = {
 	.accel = FB_ACCEL_NONE,
 };
 
-/* We implement our own mmap to set MAY_SHARE and add the correct size */
-static int altfb_mmap(struct fb_info *info, struct vm_area_struct *vma)
-{
-	vma->vm_flags |= VM_MAYSHARE | VM_SHARED;
-
-	vma->vm_start = info->screen_base;
-	vma->vm_end = vma->vm_start + info->fix.smem_len;
-	return 0;
-}
-
 static int altfb_setcolreg(unsigned regno, unsigned red, unsigned green,
 			   unsigned blue, unsigned transp,
 			   struct fb_info *info)
@@ -130,7 +120,6 @@ static struct fb_ops altfb_ops = {
 	.fb_fillrect = cfb_fillrect,
 	.fb_copyarea = cfb_copyarea,
 	.fb_imageblit = cfb_imageblit,
-	.fb_mmap = altfb_mmap,
 	.fb_setcolreg = altfb_setcolreg,
 };
 
