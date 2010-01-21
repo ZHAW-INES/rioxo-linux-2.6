@@ -365,9 +365,12 @@
 #define __NR_pipe2		329
 #define __NR_inotify_init1	330
 #define __NR_preadv		331
-#define __NR_pwritev    	332
+#define __NR_pwritev		332
+#define __NR_rt_sigqueueinfo	333
+#define __NR_perf_event_open	334
+#define __NR_recvmmsg		335
 
-#define NR_syscalls		333
+#define NR_syscalls		336
 
 /* Not relevant on no-mmu */
 #define __IGNORE_msync
