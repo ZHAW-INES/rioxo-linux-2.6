@@ -366,7 +366,7 @@
 #define __NR_inotify_init1	330
 #define __NR_preadv		331
 #define __NR_pwritev		332
-#define __NR_rt_sigqueueinfo	333
+#define __NR_rt_tgsigqueueinfo	333
 #define __NR_perf_event_open	334
 #define __NR_recvmmsg		335
 
