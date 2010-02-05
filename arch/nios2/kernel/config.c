@@ -1346,6 +1346,18 @@ static void tse_device_init(void)
 static void tse_device_init(void) {}
 #endif 
 
+/* HD over IP hardware components */
+
+static struct platform_device hdoip_ether_device = {
+	.name           = "hdoip_ether",
+	.id             = 0,
+	.num_resources  = 0,
+	.resource       = NULL,
+	.dev            = {
+		.platform_data = NULL,
+	},
+};
+
 /*
  *	Nios2 platform devices
  */
@@ -1438,6 +1450,10 @@ static struct platform_device *nios2_devices[] __initdata = {
 #if defined (CONFIG_ALT_TSE)
 	&alt_tse_mdio_device,
 	&alt_tse_device,
+#endif
+
+#if defined (CONFIG_INES_HDOIP_EVA)
+	&hdoip_ether_device,
 #endif
 };
 

@@ -187,6 +187,11 @@ config ALTERA_CYCLONE_III
 	  Support for the Altera CYCLONE III 3C120 Development board. Includes
 	  support for 10/100/1000 ethernet, FLASH, DDR2 SDRAM.
 
+config INES_HDOIP_EVA
+	bool "InES HD over IP EVA board (Cyclone III)"
+	depends on NIOS2
+	help
+
 endchoice
 
 choice
