@@ -30,6 +30,15 @@
 #include <linux/leds.h>
 #include <linux/gpio_mouse.h>
 
+/* FUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUU */
+#ifndef na_epcs_controller
+#define na_epcs_controller na_epcs_flash_controller
+#endif
+
+#ifndef na_epcs_controller_irq
+#define na_epcs_controller_irq na_epcs_flash_controller_irq
+#endif
+
 /*
  *	Altera JTAG UART
  */
@@ -429,7 +438,11 @@ static void nios2_plat_nand_init(void) {}
 #endif
 
 #if (defined(CONFIG_SPI_ALTERA)  || defined(CONFIG_SPI_ALTERA_MODULE)) && defined(na_epcs_controller)
+#if defined(CONFIG_INES_HDOIP_EVA)
+#define EPCS_SPI_OFFSET 0x400
+#else
 #define EPCS_SPI_OFFSET 0x200	/* FIXME */
+#endif
 static struct resource na_epcs_controller_resource[] = {
 	[0] = {
 	       .start = na_epcs_controller + EPCS_SPI_OFFSET,
@@ -464,6 +477,17 @@ static struct mtd_partition nios2_spi_flash_partitions[] = {
 	 .size = 0x400000,
 	 .offset = 0,
 	 }
+#elif defined(CONFIG_INES_HDOIP_EVA)
+	{
+	.name = "fpga configuration",
+	.size = 0x400000,
+	.offset = 0,
+	},
+	{
+	.name = "romfs/jffs2",
+	.size = 0xc00000,
+	.offset = 0x400000,
+	},
 #else
 	{
 	 .name = "romfs/jffs2",
@@ -484,6 +508,8 @@ static struct flash_platform_data nios2_spi_flash_data = {
 	.nr_parts = ARRAY_SIZE(nios2_spi_flash_partitions),
 #if defined(CONFIG_ALTERA_STRATIX_II) || defined(CONFIG_ALTERA_CYCLONE_II)
 	.type = "m25p64",	/* depend on the actual size of spi flash */
+#elif defined(CONFIG_INES_HDOIP_EVA)
+	.type = "m25p128",	/* depend on the actual size of spi flash */
 #else
 	.type = "m25p16",	/* depend on the actual size of spi flash */
 #endif
@@ -1128,6 +1154,7 @@ static struct platform_device atse_device = {
 		.platform_data = &atse_platdata,
 	}
 };
+
 static void atse_device_init(void)
 {
 	/* write eth hardware address to MAC registers */
