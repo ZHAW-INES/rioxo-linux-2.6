@@ -1,5 +1,7 @@
 # Platfrom drivers configuration
 
+menu "Additional NiosII Device Drivers"
+
 source "arch/nios2/drivers/pci/Kconfig"
 
 config ALTERA_REMOTE_UPDATE
@@ -30,3 +32,14 @@ config ALTERA_REMOTE_UPDATE_FLASH_WIDTH_8
 config ALTERA_REMOTE_UPDATE_FLASH_WIDTH_16
 	bool "16 bits (shift address by 3)"
 endchoice
+
+config PIO_DEVICES
+	bool "Enable NiosII PIO driver"
+	default n
+	depends on (ALTERA_STRATIX || ALTERA_STRATIX_PRO || ALTERA_CYCLONE)
+	help
+	  This enables example code to support leds, and seven segment
+	  display as PIO devices. Once enabled, the kernel will show a
+	  counter (increas once a second) on these devices.
+
+endmenu
