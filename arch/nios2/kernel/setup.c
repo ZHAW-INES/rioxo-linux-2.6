@@ -135,7 +135,7 @@ void __init setup_arch(char **cmdline_p)
 		memcpy(command_line, default_command_line, sizeof(default_command_line));
 #endif
 
-	printk("\x0F\ruClinux/Nios II\n");
+	printk("uClinux/Nios II\n");
 
 #ifdef DEBUG
 	printk("KERNEL -> TEXT=0x%08x-0x%08x DATA=0x%08x-0x%08x "
