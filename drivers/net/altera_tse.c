@@ -29,13 +29,11 @@
 #include <linux/kernel.h>	/* printk(), and other useful stuff */
 #include <linux/sched.h>	/* for jiffies, HZ, etc. */
 #include <linux/string.h>	/* inline memset(), etc. */
-#include <linux/ptrace.h>
 #include <linux/errno.h>	/* return codes */
 #include <linux/ioport.h>	/* request_region(), release_region() */
 #include <linux/interrupt.h>
 #include <linux/delay.h>
-#include <linux/inet.h>
-#include <linux/netdevice.h>	/* struct device, and other headers */
+#include <linux/netdevice.h>	/* struct net_device, and other headers */
 #include <linux/etherdevice.h>	/* eth_type_trans */
 #include <linux/skbuff.h>
 #include <linux/ethtool.h>
@@ -46,9 +44,6 @@
 #include <linux/pm.h>		/* pm_message_t */
 #include <linux/platform_device.h>
 
-#include <asm/irq.h>		/* For NR_IRQS only. */
-#include <asm/pgtable.h>
-#include <asm/page.h>
 #include <asm/cacheflush.h>
 
 #include <asm/processor.h>	/* Processor type for cache alignment. */
@@ -56,12 +51,11 @@
 #include <asm/io.h>		/* I/O functions */
 #include <asm/uaccess.h>	/* User space memory access functions */
 
-#include "altera_tse.h"    
-
+#include "altera_tse.h"
 
 static const char version[] =
     "Altera Triple Speed MAC IP Driver(v8.0) "
-    "developed by SLS,August-2008," "--Linux 2.6.27-rc3\n";
+    "developed by SLS,August-2008\n";
 
 /* DEBUG flags */
 //#define DEBUG_INFO     1  
@@ -147,7 +141,7 @@ static void tse_set_hash_table(struct net_device *dev, int count,
 			       struct dev_mc_list *addrs);
 
 static void tse_set_multicast_list(struct net_device *dev);
-int tse_set_hw_address(struct net_device *dev, void *port);
+static int tse_set_hw_address(struct net_device *dev, void *port);
 static int tse_open(struct net_device *dev);
 static int tse_shutdown(struct net_device *dev);
 
@@ -1275,10 +1269,13 @@ static void tse_set_multicast_list(struct net_device *dev)
 * arg2    : address passed from upper layer
 * return : 0
 */
-int tse_set_hw_address(struct net_device *dev, void *port)
+static int tse_set_hw_address(struct net_device *dev, void *port)
 {
 	struct sockaddr *addr = port;
 	struct alt_tse_private *tse_priv = netdev_priv(dev);
+
+	if (!is_valid_ether_addr(addr->sa_data))
+		return -EADDRNOTAVAIL;
 
 	memcpy(dev->dev_addr, addr->sa_data, dev->addr_len);
 
@@ -1316,18 +1313,11 @@ int tse_set_hw_address(struct net_device *dev, void *port)
 	tse_priv->mac_dev->supp_mac_addr_3_1 = tse_priv->mac_dev->mac_addr_1;
 
 	if (netif_msg_hw(tse_priv))
-		printk(KERN_INFO "%s :Set Mac Address %2x:%2x:%2x:%2x:%2x:%2x\n", 
-			dev->name,
-			dev->dev_addr[0],
-			dev->dev_addr[1],
-			dev->dev_addr[2],
-			dev->dev_addr[3], dev->dev_addr[4], dev->dev_addr[5]);
-	//PRINTK1("read add mac_0 = 0x%x\n", tse_priv->mac_dev->mac_addr_0);
-	//PRINTK1("read add mac_1 = 0x%x\n", tse_priv->mac_dev->mac_addr_1);
+		printk(KERN_INFO "%s :Set MAC address %pM\n", dev->name,
+		       dev->dev_addr);
+
 	return 0;
 }
-
-
 
 /*******************************************************************************
 * Driver Open, shutdown, probe functions
@@ -1421,7 +1411,6 @@ static int tse_open(struct net_device *dev)
 
 	/* Start network queue */     	
 	netif_start_queue(dev);
-	tse_priv->tse_up = 1;
 	//tasklet_init(&tse_priv->tse_rx_tasklet, tse_sgdma_rx, (unsigned long)dev);
 	return SUCCESS;
 }
@@ -1503,11 +1492,9 @@ static int tse_shutdown(struct net_device *dev)
 
 	phy_disconnect(tse_priv->phydev);
 	tse_priv->phydev = NULL;
-	
+
 	netif_stop_queue(dev);
-	
-	tse_priv->tse_up = 0;
-	
+
 	return SUCCESS;
 }
 
@@ -1600,7 +1587,7 @@ static int __devinit alt_tse_probe(struct platform_device *pdev)
 
 	dev = alloc_etherdev(sizeof(struct alt_tse_private));
 	if (!dev) {
-		printk(KERN_ERR "%s: Etherdev alloc failed, aborting.\n", dev->name);
+		printk(KERN_ERR "Could not allocate network device\n");
 		return -ENODEV;
 	}
 	//printk("\n\nTSE DEV NAME : %s", dev->name);

@@ -15,7 +15,4 @@ obj-y   := entry.o traps.o irq.o syscalltable.o \
 	    time.o ptrace.o nios2_ksyms.o
 
 obj-$(CONFIG_MODULES) += module.o
-obj-$(CONFIG_PIO_DEVICES) += pio.o
 obj-$(CONFIG_AVALON_DMA) += dma.o
-
-

@@ -24,6 +24,8 @@
 #include <linux/fs.h>
 #include <linux/string.h>
 #include <linux/kernel.h>
+#include <asm/pgtable.h>
+#include <asm/cacheflush.h>
 
 #if 0
 #define DEBUGP printk
@@ -165,6 +167,7 @@ int module_finalize(const Elf_Ehdr *hdr,
 		    const Elf_Shdr *sechdrs,
 		    struct module *me)
 {
+	flush_cache_all();
 	return 0;
 }
 

@@ -240,15 +240,6 @@ config AVALON_DMA
 	  This enables support of Altera's DMA controller with Avalon
 	  interface, so that drivers of DMA-able device can use this 
 	  interface.
-	
-config PIO_DEVICES
-	bool "Enable leds, seven segment display"
-	default y
-	depends on (ALTERA_STRATIX || ALTERA_STRATIX_PRO || ALTERA_CYCLONE)
-	help
-	  This enables example code to support leds, and seven segment
-	  display as PIO devices. Once enabled, the kernel will show a
-	  counter (increas once a second) on these devices.
 
 source "arch/nios2/drivers/Kconfig"
 

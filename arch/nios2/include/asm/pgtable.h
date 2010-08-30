@@ -65,7 +65,6 @@ static inline int pte_file(pte_t pte) { return 0; }
 #define ZERO_PAGE(vaddr)	(virt_to_page(0))
 
 extern unsigned int kobjsize(const void *objp);
-extern int is_in_rom(unsigned long);
 
 /*
  * No page table caches to initialise

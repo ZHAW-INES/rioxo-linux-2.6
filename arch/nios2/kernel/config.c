@@ -16,8 +16,8 @@
 #include <linux/irq.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
-#include <linux/altjuart.h>
-#include <linux/altuart.h>
+#include <linux/altera_jtaguart.h>
+#include <linux/altera_uart.h>
 
 #if !defined(CONFIG_INES_HDOIP_EVA)
 # error "This kernel only builds for HD over IP Eva board"

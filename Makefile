@@ -965,7 +965,7 @@ ifneq ($(KBUILD_SRC),)
 	fi;
 	$(Q)if [ ! -d include2 ]; then                                  \
 	    mkdir -p include2;                                          \
-	    ln -fsn $(srctree)/include/asm-$(SRCARCH) include2/asm;     \
+	    ln -fsn $(srctree)/arch/$(SRCARCH)/include/asm include2/asm;\
 	fi
 endif
 
