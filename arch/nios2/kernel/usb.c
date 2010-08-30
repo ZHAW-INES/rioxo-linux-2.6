@@ -274,6 +274,12 @@ subsys_initcall(usb_udc_init);
 #define na_usb_irq na_ISP1362_avalon_slave_0_irq
 #endif
 
+/* InES HD over IP eva board */
+#if defined(na_usb_controller)
+# define na_usb na_usb_controller
+# define na_usb_irq na_usb_controller_irq
+#endif
+
 #if defined(CONFIG_USB_ISP1362_HCD) && defined(na_usb)
 
 #include <linux/usb/isp1362.h>

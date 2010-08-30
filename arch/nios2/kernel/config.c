@@ -13,6 +13,8 @@
 #include <linux/mtd/partitions.h>
 #include <linux/spi/spi.h>
 #include <linux/spi/flash.h>
+#include <linux/i2c.h>
+#include <linux/i2c-ocores.h>
 #include <linux/irq.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
@@ -112,9 +114,14 @@ static struct mtd_partition nios2_spi_flash_partitions[] = {
 		.offset = 0,
 	},
 	{
-		.name = "romfs/jffs2",
-		.size = 0xc00000,
+		.name = "kernel/rootfs",
+		.size = 0xb00000,
 		.offset = 0x400000,
+	},
+	{
+		.name = "config",
+		.size = 0x100000,
+		.offset = 0xf00000,
 	},
 };
 
@@ -142,6 +149,40 @@ static struct spi_board_info nios2_spi_devices[] = {
 		.platform_data = &nios2_spi_flash_data,
 	},
 #endif
+};
+#endif
+
+/*
+ *	Opencores I2C
+ */
+
+#if (defined(CONFIG_I2C_OCORES) || defined(CONFIG_I2C_OCORES_MODULE)) && defined(I2C_0_BASE)
+static struct resource i2c_oc_0_resources[] = {
+	[0] = {
+		.start = I2C_0_BASE,
+		.end = I2C_0_BASE + 31,
+		.flags = IORESOURCE_MEM,
+	},
+	[1] = {
+		.start = I2C_0_IRQ,
+		.end = I2C_0_IRQ,
+		.flags = IORESOURCE_IRQ,
+	},
+};
+
+static struct ocores_i2c_platform_data i2c_oc_0_platform_data = {
+	.regstep = 4,		/* four bytes between registers */
+	.clock_khz = I2C_0_FREQ / 1000,	/* input clock */
+};
+
+static struct platform_device i2c_oc_0_device = {
+	.name = "ocores-i2c",
+	.id = 0,
+	.dev = {
+		.platform_data = &i2c_oc_0_platform_data,
+		},
+	.num_resources = ARRAY_SIZE(i2c_oc_0_resources),
+	.resource = i2c_oc_0_resources,
 };
 #endif
 
