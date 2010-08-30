@@ -109,19 +109,14 @@ static struct platform_device na_epcs_controller_device = {
 #if defined(CONFIG_MTD_M25P80) || defined(CONFIG_MTD_M25P80_MODULE)
 static struct mtd_partition nios2_spi_flash_partitions[] = {
 	{
-		.name = "fpga configuration",
-		.size = 0x400000,
+		.name = "fpga/linux",
+		.size = 0xd00000,
 		.offset = 0,
 	},
 	{
-		.name = "kernel/rootfs",
-		.size = 0xb00000,
-		.offset = 0x400000,
-	},
-	{
 		.name = "config",
-		.size = 0x100000,
-		.offset = 0xf00000,
+		.size = 0x200000,
+		.offset = 0xd00000,
 	},
 };
 
