@@ -1,0 +1,65 @@
+#
+#
+
+comment "Enable Host or Gadget support to see ISP1763 options"
+	depends on !USB && USB_GADGET=n
+
+menuconfig USB_ISP1763
+	tristate "ISP 1763A highspeed dual role controller support"
+	depends on (USB || USB_GADGET)
+	---help---
+	  Support for ST Ericsson ISP1763A USB OTG Controller.
+	  Allows for host only, peripheral ony and limited OTG support.
+
+
+if USB_ISP1763
+
+config USB_ISP1763_UDC
+	select USB_GADGET_SELECTED
+	tristate
+
+config USB_ISP1763_HCD
+	tristate
+
+choice
+	prompt "ISP1763 controller drivers"
+	depends on USB_ISP1763
+	---help---
+	  Marker for multiple choices for the driver operational mode:
+	  host+periperhal or [periperhal|host]-only modes.
+
+config USB_ISP1763_OTG
+	depends on USB_ISP1763
+	tristate 'ISP1763 OTG (host+device auto-select) support'
+	select USB_ISP1763_UDC
+	select USB_ISP1763_HCD
+	---help---
+	  Limited OTG support for ISP1763; enables detection of ID signal and
+	  automatic switching between host and device controller mode. Does
+	  not include HRP and SRP support.
+
+	  This option will build the drivers for both host and peripheral
+	  controller.
+
+config USB_ISP1763_UDC_SELECT
+	depends on USB_ISP1763
+	depends on USB_GADGET
+	select USB_GADGET_DUALSPEED
+	select USB_ISP1763_FUNCTION_SELECTED
+	select USB_ISP1763_UDC
+	tristate 'ISP1763 UDC peripheral-only support'
+	---help---
+	   This flag turns on only the Support for peripheral controller
+	   functionality of the ISP1763
+
+config USB_ISP1763_HCD_SELECT
+	depends on USB_ISP1763
+	select USB_ISP1763_HCD
+	tristate 'ISP1763 HCD host-only support'
+	---help---
+	   This flag turns on only the Support for host controller
+	   functionality of the ISP1763
+
+endchoice
+
+endif
