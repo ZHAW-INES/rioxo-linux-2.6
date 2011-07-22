@@ -350,3 +350,63 @@ static int __init usb_hcd_init(void)
 subsys_initcall(usb_hcd_init);
 #endif
 
+/* InES HD over IP eva board (new USB chip) */
+#if defined(na_ISP1763_CTRL_0)
+# define na_usb na_ISP1763_CTRL_0
+# define na_usb_irq na_ISP1763_CTRL_0_irq
+#endif
+
+#if (defined(CONFIG_USB_ISP1763) || defined(CONFIG_USB_PEHCI_HCD)) && defined(na_usb)
+
+#include <linux/usb/isp1763.h>
+#define ISP1763_HCD_ADDR ((unsigned int)na_usb)
+#define ISP1763_HCD_IRQ na_usb_irq
+
+static struct resource isp1763_hcd_resources[] = {
+	{
+		.start	= ISP1763_HCD_ADDR,
+		.end	= ISP1763_HCD_ADDR + 1024,
+		.flags	= IORESOURCE_MEM,
+	},
+	{
+		.start	= ISP1763_HCD_IRQ,
+		.flags	= IORESOURCE_IRQ,
+	},
+};
+
+static struct isp1763_platform_data isp1763_data = {
+	.bus_width_8 = 0,		/* 8/16-bit data bus width */
+	.port1_otg = 1,			/* Port 1 supports OTG (0 = host, 1 = otg, 2 = device) */
+	.dack_polarity_high = 0,	/* DACK active high */
+	.dreq_polarity_high = 0,	/* DREQ active high */
+	.intr_polarity_high = 0,	/* INTR active high */
+	.intr_edge_trigger = 0,		/* INTR edge trigger */
+};
+
+static struct platform_device isp1763_hcd = {
+	.name			= "isp1763",
+	.id			= -1,
+	.dev = {
+		.coherent_dma_mask	= 0x0fffffff,
+		.platform_data = &isp1763_data,
+	},
+	.num_resources	= ARRAY_SIZE(isp1763_hcd_resources),
+	.resource	= isp1763_hcd_resources,
+};
+
+static int __init usb_hcd_init(void)
+{
+	int status;
+
+	pr_info("Registering USB device...\n");
+
+	status = platform_device_register(&isp1763_hcd);
+	if (status) {
+		pr_debug("can't register isp1763 host controller, %d\n", status);
+		return -1;
+	}
+
+	return 0;
+}
+subsys_initcall(usb_hcd_init);
+#endif
