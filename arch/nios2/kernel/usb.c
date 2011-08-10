@@ -376,7 +376,7 @@ static struct resource isp1763_hcd_resources[] = {
 
 static struct isp1763_platform_data isp1763_data = {
 	.bus_width_8 = 0,		/* 8/16-bit data bus width */
-	.port1_otg = 1,			/* Port 1 supports OTG (0 = host, 1 = otg, 2 = device) */
+	.port1_otg = 0,			/* Port 1 supports OTG (0 = host, 1 = otg, 2 = device) */
 	.dack_polarity_high = 0,	/* DACK active high */
 	.dreq_polarity_high = 0,	/* DREQ active high */
 	.intr_polarity_high = 0,	/* INTR active high */
@@ -397,8 +397,6 @@ static struct platform_device isp1763_hcd = {
 static int __init usb_hcd_init(void)
 {
 	int status;
-
-	pr_info("Registering USB device...\n");
 
 	status = platform_device_register(&isp1763_hcd);
 	if (status) {
