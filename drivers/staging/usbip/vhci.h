@@ -23,7 +23,7 @@
 #include <linux/sysfs.h>
 #include <linux/types.h>
 #include <linux/usb.h>
-#include <linux/usb/hcd.h>
+#include "../..//usb/core/hcd.h"
 #include <linux/wait.h>
 
 struct vhci_device {

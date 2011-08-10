@@ -91,8 +91,10 @@ struct usb_hcd {
 
 	/* Flags that need to be manipulated atomically */
 	unsigned long		flags;
-#define HCD_FLAG_HW_ACCESSIBLE	0x00000001
-#define HCD_FLAG_SAW_IRQ	0x00000002
+#define HCD_FLAG_HW_ACCESSIBLE	0
+#define HCD_FLAG_SAW_IRQ	1
+
+#define HCD_HW_ACCESSIBLE(hcd)	((hcd)->flags & (1U << HCD_FLAG_HW_ACCESSIBLE))
 
 	unsigned		rh_registered:1;/* is root hub registered? */
 
