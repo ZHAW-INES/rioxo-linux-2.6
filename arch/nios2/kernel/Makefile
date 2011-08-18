@@ -16,3 +16,5 @@ obj-y   := entry.o traps.o irq.o syscalltable.o \
 
 obj-$(CONFIG_MODULES) += module.o
 obj-$(CONFIG_AVALON_DMA) += dma.o
+
+obj-y += hidg.o
