@@ -111,7 +111,7 @@ config	USB_GADGET_SELECTED
 #
 choice
 	prompt "USB Peripheral Controller"
-	depends on USB_GADGET
+	depends on USB_GADGET && !USB_ISP1763_UDC
 	help
 	   A USB device uses a controller to talk to its host.
 	   Systems should have only one such upstream link.
@@ -793,6 +793,18 @@ config USB_CDC_COMPOSITE
 
 	  Say "y" to link the driver statically, or "m" to build a
 	  dynamically linked module.
+
+config USB_G_HID
+	tristate "HID Gadget"
+	help
+	  The HID gadget driver provides generic emulation of USB
+	  Human Interface Devices (HID).
+
+	  For more information, see Documentation/usb/gadget_hid.txt which
+	  includes sample code for accessing the device files.
+
+	  Say "y" to link the driver statically, or "m" to build a
+	  dynamically linked module called "g_hid".
 
 # put drivers that need isochronous transfer support (for audio
 # or video class gadget drivers), or specific hardware, here.
