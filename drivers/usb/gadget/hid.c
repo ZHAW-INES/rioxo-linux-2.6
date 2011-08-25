@@ -221,8 +221,6 @@ static int __init hidg_plat_driver_probe(struct platform_device *pdev)
 	struct hidg_func_descriptor *func = pdev->dev.platform_data;
 	struct hidg_func_node *entry;
 
-	pr_info("enter %s\n", __func__);
-
 	if (!func) {
 		dev_err(&pdev->dev, "Platform data missing\n");
 		return -ENODEV;
@@ -277,8 +275,6 @@ MODULE_LICENSE("GPL");
 static int __init hidg_init(void)
 {
 	int status;
-
-	pr_info("enter %s\n", __func__);
 
 	status = platform_driver_probe(&hidg_plat_driver,
 				hidg_plat_driver_probe);
