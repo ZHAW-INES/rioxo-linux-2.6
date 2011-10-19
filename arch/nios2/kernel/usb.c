@@ -356,7 +356,7 @@ subsys_initcall(usb_hcd_init);
 # define na_usb_irq na_ISP1763_CTRL_0_irq
 #endif
 
-#if (defined(CONFIG_USB_ISP1763) || defined(CONFIG_USB_PEHCI_HCD)) && defined(na_usb)
+#if (defined(CONFIG_USB_ISP1763) || defined(CONFIG_USB_ISP1763_MODULE) || defined(CONFIG_USB__ISP1763) || defined(CONFIG_USB__ISP1763_MODULE)) && defined(na_usb)
 
 #include <linux/usb/isp1763.h>
 #define ISP1763_HCD_ADDR ((unsigned int)na_usb)
@@ -376,14 +376,14 @@ static struct resource isp1763_hcd_resources[] = {
 
 static struct isp1763_platform_data isp1763_data = {
 	.bus_width_8 = 0,		/* 8/16-bit data bus width */
-	.port1_otg = 0,			/* Port 1 supports OTG (0 = host, 1 = otg, 2 = device) */
+	.port1_otg = 1,			/* Port 1 supports OTG (0 = host, 1 = otg) */
 	.dack_polarity_high = 0,	/* DACK active high */
 	.dreq_polarity_high = 0,	/* DREQ active high */
 	.intr_polarity_high = 0,	/* INTR active high */
 	.intr_edge_trigger = 0,		/* INTR edge trigger */
 };
 
-static struct platform_device isp1763_hcd = {
+static struct platform_device isp1763_hcd_udc = {
 	.name			= "isp1763",
 	.id			= -1,
 	.dev = {
@@ -398,9 +398,9 @@ static int __init usb_hcd_init(void)
 {
 	int status;
 
-	status = platform_device_register(&isp1763_hcd);
+	status = platform_device_register(&isp1763_hcd_udc);
 	if (status) {
-		pr_debug("can't register isp1763 host controller, %d\n", status);
+		pr_debug("can't register isp1763, %d\n", status);
 		return -1;
 	}
 
