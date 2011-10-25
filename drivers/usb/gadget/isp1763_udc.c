@@ -95,14 +95,54 @@ static void isp1763_udc_set_ep_index(struct isp1763_udc *udc, u8 index)
 	ndelay(400);
 }
 
+static void isp1763_udc_connect(struct isp1763_udc *udc)
+{
+	u32 tmp;
+
+	/* Enable device */
+	isp1763_writew(udc, ISP1763_ADDR_DEVEN, ISP1763_REG_ADDR);
+
+	tmp = ISP1763_OTG_CTRL_DP_PULLUP | ISP1763_OTG_CTRL_SW_SEL_HC_DC;
+	isp1763_writew(udc, tmp, ISP1763_REG_OTG_CTRL_SET);
+
+	tmp = ISP1763_OTG_CTRL_DP_PULLDOWN | ISP1763_OTG_CTRL_DM_PULLDOWN
+		| ISP1763_OTG_CTRL_VBUS_DRV;
+	isp1763_writew(udc, tmp, ISP1763_REG_OTG_CTRL_CLEAR);
+
+	/* Connect to the bus */
+	tmp = ISP1763_MODE_WKUPCS | ISP1763_MODE_CLKAON | ISP1763_MODE_GLINTENA;
+	isp1763_writew(udc, tmp, ISP1763_REG_MODE);
+
+	/* 1us pulse width */
+	isp1763_writew(udc, 0x1E, ISP1763_REG_INT_PULSE_WIDTH);
+
+	/* Set interrupt configuration register: interrupt on all ACK... */
+	tmp = ISP1763_INT_CONF_DDBGMODOUT_ALL_ACK
+		| ISP1763_INT_CONF_DDBGMODIN_ALL_ACK
+		| ISP1763_INT_CONF_CDBGMOD_ALL_ACK;
+	isp1763_writew(udc, tmp, ISP1763_REG_INT_CONF);
+
+	/* Enable interrupts */
+	tmp = ISP1763_DC_INT_EP0SETUP | ISP1763_DC_INT_EP0RX | ISP1763_DC_INT_EP0TX;
+	tmp |= ISP1763_DC_INT_VBUS | ISP1763_DC_INT_HS_STA | ISP1763_DC_INT_SUSP;
+	tmp |= ISP1763_DC_INT_BRESET | ISP1763_DC_INT_SUSP | ISP1763_DC_INT_RESM;
+	isp1763_writel(udc, tmp, ISP1763_REG_DC_INT_EN);
+
+	tmp = isp1763_readw(udc, ISP1763_REG_HW_MODE_CTRL);
+	tmp |= ISP1763_HW_MODE_CTRL_COMN_INT
+		| ISP1763_HW_MODE_CTRL_GLOBAL_INTR_EN
+		| ISP1763_HW_MODE_CTRL_ID_PULLUP;	/* disable sampling of ID line */
+	isp1763_writew(udc, tmp, ISP1763_REG_HW_MODE_CTRL);
+}
+
 static void __ep_disable(struct isp1763_ep *ep)
 {
 	struct isp1763_udc *udc = ep->udc;
-	unsigned int tmp;
+	u32 tmp;
 
 	/* disable interrupt for this endpoint (XXX: shall we do this here?) */
-	tmp = isp1763_readw(udc, ISP1763_REG_DC_INT_EN);
-	isp1763_writew(udc, tmp & ~(1 << (ep->index + 10)), ISP1763_REG_DC_INT_EN);
+	tmp = isp1763_readl(udc, ISP1763_REG_DC_INT_EN);
+	isp1763_writel(udc, tmp & ~(1 << (ep->index + 10)), ISP1763_REG_DC_INT_EN);
 
 	udc->ep_fifo_space += ep->maxpacketsize;
 	ep->maxpacketsize = 0;
@@ -351,7 +391,8 @@ static int isp1763_udc_ep_enable(struct usb_ep *_ep,
 	struct isp1763_ep *ep = container_of(_ep, struct isp1763_ep, ep);
 	struct isp1763_udc *udc = ep->udc;
 	unsigned long flags;
-	u16 fifo_size, tmp;
+	u16 fifo_size;
+	u32 tmp;
 	unsigned int i;
 
 	if (!desc)
@@ -385,11 +426,9 @@ static int isp1763_udc_ep_enable(struct usb_ep *_ep,
 	ep->maxpacketsize = fifo_size;
 	udc->ep_fifo_space -= fifo_size;
 
-#if 0
 	/* enable interrupt for this endpoint (XXX: shall we do this here?) */
-	tmp = isp1763_readw(udc, ISP1763_REG_DC_INT_EN);
-	isp1763_writew(udc, tmp | (1 << (ep->index + 10)), ISP1763_REG_DC_INT_EN);
-#endif
+	tmp = isp1763_readl(udc, ISP1763_REG_DC_INT_EN);
+	isp1763_writel(udc, tmp | (1 << (ep->index + 10)), ISP1763_REG_DC_INT_EN);
 
 	spin_unlock_irqrestore(&udc->lock, flags);
 
@@ -654,7 +693,7 @@ static irqreturn_t isp1763_udc_irq(int irq, void *data)
 
 	if (irqs & ISP1763_DC_INT_VBUS) {
 		u16 mode = isp1763_readw(udc, ISP1763_REG_MODE);
-		u32 tmp = isp1763_readl(udc, ISP1763_REG_OTG_CTRL);
+		u32 tmp = isp1763_readl(udc, ISP1763_REG_OTG_CTRL_SET);
 
 		dev_info(udc->dev, "VBUS\n");
 
@@ -663,7 +702,7 @@ static irqreturn_t isp1763_udc_irq(int irq, void *data)
 		else
 			tmp &= ~ISP1763_OTG_CTRL_DP_PULLUP;
 
-		isp1763_writel(udc, tmp, ISP1763_REG_OTG_CTRL);
+		isp1763_writel(udc, tmp, ISP1763_REG_OTG_CTRL_SET);
 	}
 
 	/* EP0 setup */
@@ -732,12 +771,9 @@ ep0rx_out:
 ep0tx_out:
 
 	if (irqs & ISP1763_DC_INT_BRESET) {
-		unsigned int i;
-
 		dev_info(udc->dev, "BRESET\n");
-		udc->gadget.speed = USB_SPEED_FULL;
-		for (i = 1; i < ISP1763_UDC_MAX_ENDPOINTS; i++)
-			__ep_disable(&udc->ep[i]);
+
+		/* XXX: We need to react to this */
 	}
 
 	/* EP interrupts */
@@ -753,20 +789,21 @@ ep0tx_out:
 	}
 
 out:
+	isp1763_udc_enable_glint(udc);
 	spin_unlock_irqrestore(&udc->lock, flags);
 	return IRQ_HANDLED;
 }
 
 static int isp1763_udc_init_hw(struct isp1763_udc *udc)
 {
-	u16 hwmode = ISP1763_HW_MODE_CTRL_COMN_INT
-			| ISP1763_HW_MODE_CTRL_GLOBAL_INTR_EN
-			| ISP1763_HW_MODE_CTRL_ID_PULLUP;	/* disable sampling of ID line */
 	u32 chip_id;
 	u16 tmp;
 	int ret;
 
 	pr_debug("-> entering %s\n", __func__);
+
+	/* Unlock the controller */
+	isp1763_writew(udc, ISP1763_UNLOCK_CODE, ISP1763_REG_UNLOCK);
 
 	/* Dummy reads to stabilize controller access */
 	mdelay(10);
@@ -783,6 +820,7 @@ static int isp1763_udc_init_hw(struct isp1763_udc *udc)
 		return -EIO;
 	}
 
+#if 0
 	/* Select bus width and interrupt polarity (XXX: hardcoded for now) */
 	hwmode &= ~ISP1763_HW_MODE_CTRL_DATA_BUS_WIDTH;
 	hwmode &= ~ISP1763_HW_MODE_CTRL_INTR_POL;
@@ -796,21 +834,17 @@ static int isp1763_udc_init_hw(struct isp1763_udc *udc)
 
 	/* Unlock the controller */
 	isp1763_writew(udc, ISP1763_UNLOCK_CODE, ISP1763_REG_UNLOCK);
-
+#endif
 	/* Soft reset */
+#if 0
 	tmp = isp1763_readw(udc, ISP1763_REG_SWRESET);
 	tmp |= ISP1763_SWRESET_RESET_ALL | ISP1763_SWRESET_RESET_ATX;
 	isp1763_writew(udc, tmp, ISP1763_REG_SWRESET);
-	tmp = isp1763_readw(udc, ISP1763_REG_MODE);
-	tmp |= ISP1763_MODE_SFRESET;
-	isp1763_writew(udc, tmp, ISP1763_REG_MODE);
-	udelay(50);
-	tmp &= ~ISP1763_MODE_SFRESET;
-	isp1763_writew(udc, tmp, ISP1763_REG_MODE);
+#endif
+	isp1763_writew(udc, ISP1763_MODE_SFRESET, ISP1763_REG_MODE);
 	mdelay(1);
-
-	/* Unlock the controller */
-	isp1763_writew(udc, ISP1763_UNLOCK_CODE, ISP1763_REG_UNLOCK);
+	isp1763_writew(udc, 0, ISP1763_REG_MODE);
+	mdelay(5);
 
 	/* Check the chip ID, again */
 	chip_id = isp1763_readl(udc, ISP1763_REG_CHIP_ID);
@@ -837,6 +871,7 @@ static int isp1763_udc_init_hw(struct isp1763_udc *udc)
 	if (ret)
 		return ret;
 
+#if 0
 	isp1763_writew(udc, hwmode, ISP1763_REG_HW_MODE_CTRL);
 
 	/* Set interrupt level */
@@ -844,37 +879,30 @@ static int isp1763_udc_init_hw(struct isp1763_udc *udc)
 	tmp &= ~ISP1763_HW_MODE_CTRL_INTR_POL;
 	tmp &= ~ISP1763_HW_MODE_CTRL_INTR_LEVEL;
 	isp1763_writew(udc, tmp, ISP1763_REG_HW_MODE_CTRL);
-
+#endif
 	/* Enable device mode */
-	tmp = isp1763_readw(udc, ISP1763_REG_OTG_CTRL);
-	tmp |= ISP1763_OTG_CTRL_SW_SEL_HC_DC | ISP1763_OTG_CTRL_DP_PULLUP;
-	tmp &= ~(ISP1763_OTG_CTRL_DM_PULLDOWN | ISP1763_OTG_CTRL_DP_PULLDOWN);
+	isp1763_writew(udc, 0xFFFF, ISP1763_REG_OTG_CTRL_CLEAR);
+	tmp = isp1763_readw(udc, ISP1763_REG_OTG_CTRL_SET);
+	tmp |= ISP1763_OTG_CTRL_DM_PULLDOWN | ISP1763_OTG_CTRL_DP_PULLDOWN;
+	isp1763_writew(udc, tmp, ISP1763_REG_OTG_CTRL_SET);
 	/* disable OTG */
 	tmp |= ISP1763_OTG_CTRL_OTG_DISABLE;
-	isp1763_writew(udc, tmp, ISP1763_REG_OTG_CTRL);
+	isp1763_writew(udc, tmp, ISP1763_REG_OTG_CTRL_SET);
+	tmp |= ISP1763_OTG_CTRL_SW_SEL_HC_DC;
+	isp1763_writew(udc, tmp, ISP1763_REG_OTG_CTRL_SET);
 
-	/* Enable device */
-	isp1763_writew(udc, ISP1763_REG_ADDR, ISP1763_ADDR_DEVEN);
+	mdelay(1);
 
 	/* Set mode register */
 	tmp = ISP1763_MODE_GLINTENA | ISP1763_MODE_WKUPCS;
 	isp1763_writew(udc, tmp, ISP1763_REG_MODE);
 
-	/* Set interrupt configuration register: interrupt on all ACK... */
-	tmp = ISP1763_INT_CONF_DDBGMODOUT_ALL_ACK
-		| ISP1763_INT_CONF_DDBGMODIN_ALL_ACK
-		| ISP1763_INT_CONF_CDBGMOD_ALL_ACK;
-	/* ...interrupt level */
-	tmp &= ISP1763_INT_CONF_INTPOL;
-	tmp &= ~ISP1763_INT_CONF_INTLVL;
-	isp1763_writew(udc, tmp, ISP1763_REG_INT_CONF);
+	tmp = isp1763_readw(udc, ISP1763_REG_HW_MODE_CTRL);
+	tmp |= ISP1763_HW_MODE_CTRL_GLOBAL_INTR_EN | ISP1763_HW_MODE_CTRL_INTF_LOCK | ISP1763_HW_MODE_CTRL_COMN_INT;
+	isp1763_writew(udc, tmp, ISP1763_REG_HW_MODE_CTRL);
 
-	/*
-	 * Enable required interrupts (note: endpoint interrupts for endpoints
-	 * != EP0 will only get enabled if the respective endpoint is enabled by
-	 * the gadget subsystem)
-	 */
-	isp1763_writew(udc, 0x03FFFDF9, ISP1763_REG_DC_INT_EN);
+	/* "Connect" the chip */
+	isp1763_udc_connect(udc);
 
 	pr_debug("<- leaving %s\n", __func__);
 
@@ -960,12 +988,11 @@ static int isp1763_udc_probe(struct platform_device *pdev)
 
 	if (!devm_request_mem_region(&pdev->dev, res->start, resource_size(res),
 			"isp1763")) {
-		dev_err(&pdev->dev, "can't reserve memory region @%08lx (%08lx)\n", res->start, resource_size(res));
+		dev_err(&pdev->dev, "can't reserve memory region\n");
 		return -EBUSY;
 	}
 
 	udc->base = devm_ioremap_nocache(&pdev->dev, res->start, resource_size(res));
-	pr_debug("ISP1763 register base at %08lx\n", (unsigned long) udc->base);
 	if (!udc->base) {
 		dev_err(&pdev->dev, "can't remap memory region\n");
 		return -ENOMEM;
