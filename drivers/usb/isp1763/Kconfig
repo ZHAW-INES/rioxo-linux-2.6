@@ -15,7 +15,6 @@ menuconfig USB_ISP1763
 if USB_ISP1763
 
 config USB_ISP1763_UDC
-	select USB_GADGET_SELECTED
 	tristate
 
 config USB_ISP1763_HCD
@@ -33,6 +32,7 @@ config USB_ISP1763_OTG
 	tristate 'ISP1763 OTG (host+device auto-select) support'
 	select USB_ISP1763_UDC
 	select USB_ISP1763_HCD
+	select USB_GADGET_SELECTED
 	---help---
 	  Limited OTG support for ISP1763; enables detection of ID signal and
 	  automatic switching between host and device controller mode. Does
@@ -47,6 +47,7 @@ config USB_ISP1763_UDC_SELECT
 	select USB_GADGET_DUALSPEED
 	select USB_ISP1763_FUNCTION_SELECTED
 	select USB_ISP1763_UDC
+	select USB_GADGET_SELECTED
 	tristate 'ISP1763 UDC peripheral-only support'
 	---help---
 	   This flag turns on only the Support for peripheral controller

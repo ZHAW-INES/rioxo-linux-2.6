@@ -55,6 +55,8 @@ struct isp1763_udc {
 	struct isp1763_regs *regs;
 
 	struct isp1763_controller ctrl;
+
+	spinlock_t lock;
 };
 
 /**
@@ -109,18 +111,18 @@ struct isp_ep {
 #define clr_vendp_flag(dev)  isp1763_writew(isp1763_readw(&(dev)->regs->ctrlfn)\
 				& ~MASK_CTRL_VENDP, &(dev)->regs->ctrlfn)
 
-#if 0
-#define disable_glint(dev)   isp1763_writew(isp1763_readw(&(dev)->regs->mode) \
-				& ~MASK_MODE_GLINTENA, &(dev)->regs->mode);
-#else
-#define disable_glint(dev)
-#endif
-#define enable_glint(dev) isp1763_writew(isp1763_readw(&(dev)->regs->mode) \
-				| MASK_MODE_GLINTENA,  &(dev)->regs->mode);
-#define ep_idx_to_addr(x) (x+2)
+static inline void disable_glint(struct isp1763_udc *dev)
+{
+	isp1763_writew(isp1763_readw(&dev->regs->mode)
+				& ~MASK_MODE_GLINTENA, &dev->regs->mode);
+}
 
+static inline void enable_glint(struct isp1763_udc *dev)
+{
+	isp1763_writew(isp1763_readw(&dev->regs->mode)
+				| MASK_MODE_GLINTENA,  &dev->regs->mode);
+}
 
-#define disable_glint__(dev) isp1763_writew(isp1763_readw(&(dev)->regs->mode) \
-				& ~MASK_MODE_GLINTENA, &(dev)->regs->mode);
+#define disable_glint__(dev)	disable_glint(dev)
 
 #endif

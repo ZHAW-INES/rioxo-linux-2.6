@@ -25,7 +25,7 @@
  * (c) 2010 I+ME ACTIA Informatik und Mikroelektronik GmbH
  *
  */
-#define DEBUG
+//#define DEBUG
 
 #define pr_fmt(fmt)	KBUILD_MODNAME ": " fmt
 
@@ -78,7 +78,7 @@ static struct isp_ep isp_eps[USB_MAX_ENDPOINTS];
 
 /* Use this #define to activate dump debug functions and add it where you need
  * to dump in the code */
-#define ISP1763_UDC_DUMP_DEBUG
+#undef ISP1763_UDC_DUMP_DEBUG
 
 static u32 irq_bits = MASK_DCINTENABLE_RELEVANT;
 
@@ -89,10 +89,10 @@ static u32 irq_bits = MASK_DCINTENABLE_RELEVANT;
 * @head: queue head
 * @elem: element for which to create entry
 */
-static void queue_add(struct queue **head, void *elem)
+static void queue_add(struct queue **head, void *elem, gfp_t gfp_flags)
 {
 	struct queue *p = NULL;
-	struct queue *new = kmalloc(sizeof(struct queue), GFP_ATOMIC);
+	struct queue *new = kmalloc(sizeof(struct queue), gfp_flags);
 
 	new->next = NULL;
 	new->elem = elem;
@@ -367,8 +367,7 @@ static void ep_stall(struct isp1763_udc *dev, int idx, int do_stall)
 * @dev: UDC device pointer
 * @req: pointer to request
 */
-static void
-ep_feature(struct isp1763_udc *dev, struct usb_ctrlrequest *req)
+static void ep_feature(struct isp1763_udc *dev, struct usb_ctrlrequest *req)
 {
 	if (le16_to_cpu(req->wValue) == USB_ENDPOINT_HALT) {
 		ep_stall(dev, REAL_EP_NUM(le16_to_cpu(req->wIndex)),
@@ -384,8 +383,7 @@ ep_feature(struct isp1763_udc *dev, struct usb_ctrlrequest *req)
 * @buf: buffer to send
 * @buflen: buffer length
 */
-static int
-write_ep(struct isp1763_udc *dev, unsigned short *buf, int buflen)
+static int write_ep(struct isp1763_udc *dev, unsigned short *buf, int buflen)
 {
 	int i = 0;
 
@@ -397,7 +395,7 @@ write_ep(struct isp1763_udc *dev, unsigned short *buf, int buflen)
 	}
 
 	isp1763_writew(buflen, &dev->regs->buflen);
-	disable_glint__(dev);
+//	disable_glint__(dev);
 
 	for (i = 0; i < (buflen / 2); i++)
 		isp1763_writew(buf[i], &dev->regs->data_port);
@@ -409,7 +407,7 @@ write_ep(struct isp1763_udc *dev, unsigned short *buf, int buflen)
 				&dev->regs->data_port);
 	}
 
-	enable_glint(dev);
+//	enable_glint(dev);
 
 	return i * 2 - (buflen % 2);
 }
@@ -436,6 +434,8 @@ int read_ep0(struct isp_ep *ep, struct usb_request *req)
 
 	buf = (unsigned short *) ((char *) req->buf + req->actual);
 	buflen = reqreadlen > 64 ? 64 : reqreadlen;
+
+	ndelay(500);
 
 	for (i = 0; i < (buflen / 2); i++)
 		buf[i] = isp1763_readw(&dev->regs->data_port);
@@ -512,6 +512,8 @@ int read_ep(struct isp_ep *ep, struct usb_request *req)
 
 	disable_glint(dev);
 
+	ndelay(500);
+
 	for (i = 0; i < (buflen / 2); i++)
 		buf[i] = isp1763_readw(&dev->regs->data_port);
 
@@ -580,31 +582,33 @@ static int configure_ep0(struct isp1763_udc *dev)
 /**
 * read_ep0_setup - read control endpoint setup request
 * @dev: UDC device pointer
-* @buf: buffer
-* @buflen: length of buffer
+* @req: USB control request buffer
 */
-static int read_ep0_setup(struct isp1763_udc *dev, unsigned short *buf, int buflen)
+static int read_ep0_setup(struct isp1763_udc *dev, struct usb_ctrlrequest *req)
 {
-	int readlen = 0;
+	u16 readlen;
+	u16 *buf;
 	int i;
 
 	ep_set_index(dev, IDX_EP0_SETUP);
 
 	readlen = isp1763_readw(&dev->regs->buflen);
-
-	if (buflen < readlen)
+	if (readlen != sizeof(*req)) {
+		pr_err("Invalid USB control request size %04x\n", readlen);
 		return -ENOMEM;
+	}
 
 	disable_glint(dev);
 
-	for (i = 0; i < ((readlen / 2) + (readlen % 2)); i++)
-		buf[i] = isp1763_readw(&dev->regs->data_port);
+	/*
+	 * A 500 ns delay starting from the reception of the endpoint
+	 * interrupt may be required for the first read from the data port.
+	 */
+	ndelay(500);
 
-	if (buflen % 2) {
-		char *bufc = (char *) buf;
-		bufc[buflen - 1] =
-		    (char) (isp1763_readw(&dev->regs->data_port) & 0xff);
-	}
+	buf = (u16 *) req;
+	for (i = 0; i < readlen / 2; i++)
+		buf[i] = isp1763_readw(&dev->regs->data_port);
 
 	enable_glint(dev);
 
@@ -616,36 +620,38 @@ static int read_ep0_setup(struct isp1763_udc *dev, unsigned short *buf, int bufl
 */
 static void handle_ep0_setup(struct isp1763_udc *dev)
 {
-	char buffer[8];
-	struct usb_ctrlrequest *setup_request;
+	struct usb_ctrlrequest req;
 	int readlen = 0;
 	int ret = 0;
+	u16 wValue, wIndex, wLength;
 
-	memset(buffer, 0, sizeof(buffer));
-	readlen = read_ep0_setup(dev, (unsigned short *) buffer,
-						sizeof(buffer));
-
-	if (readlen < sizeof(struct usb_ctrlrequest)) {
-		pr_warning("short setup packet (%d < %zu)!\n", readlen, sizeof(struct usb_ctrlrequest));
+	readlen = read_ep0_setup(dev, &req);
+	if (readlen != sizeof(req))
 		return;
-	}
-	setup_request = (struct usb_ctrlrequest *) buffer;
 
-	if ((setup_request->bRequestType & USB_TYPE_MASK) != USB_TYPE_STANDARD)
+	wValue = le16_to_cpu(req.wValue);
+	wIndex = le16_to_cpu(req.wIndex);
+	wLength = le16_to_cpu(req.wLength);
+
+	pr_debug("SETUP %02x.%02x v%04x i%04x l%04x\n",
+			req.bRequestType, req.bRequest,
+			wValue, wIndex, wLength);
+
+	if ((req.bRequestType & USB_TYPE_MASK) != USB_TYPE_STANDARD)
 		goto non_standard;
 
 	/* STANDARD REQUEST */
 	dev->ep0->state = DIR_TX;
 
-	switch (setup_request->bRequest) {
+	switch (req.bRequest) {
 	case USB_REQ_SET_ADDRESS:
-		isp1763_writew(le16_to_cpu(setup_request->wValue) |
+		isp1763_writew(le16_to_cpu(req.wValue) |
 					0x80, &dev->regs->address);
 		set_status_flag(dev);
 		break;
 	case USB_REQ_SET_FEATURE:
 	case USB_REQ_CLEAR_FEATURE:
-		ep_feature(dev, setup_request);
+		ep_feature(dev, &req);
 		break;
 	default:
 		/*
@@ -656,22 +662,22 @@ static void handle_ep0_setup(struct isp1763_udc *dev)
 		if (!dev->driver)
 			return;
 
-		ret = dev->driver->setup(dev->gadget, setup_request);
+		ret = dev->driver->setup(dev->gadget, &req);
 		if (ret < 0) {
 			error_printk(KERN_ERR
 					"###### ERROR : ->setup() returned with %i\n",
 					ret);
 			ep_stall(dev, 0, 1);
 		}
-		if (setup_request->bRequest & USB_DIR_IN) {
+		if (req.bRequest & USB_DIR_IN) {
 			if (queue_empty(&dev->ep0->queue) &&
-					(setup_request->bRequest & 0x80)) {
+					(req.bRequest & 0x80)) {
 				ep_set_index(dev, EP_INDEX(0, DIR_TX));
 				set_dsen_flag(dev);
 				write_ep(dev, NULL, 0);
 				set_vendp_flag(dev);
 			}
-		} else if (setup_request->bRequest ==
+		} else if (req.bRequest ==
 				USB_REQ_SET_CONFIGURATION) {
 			ep_set_index(dev, EP_INDEX(0, DIR_TX));
 			write_ep(dev, NULL, 0);
@@ -682,10 +688,9 @@ static void handle_ep0_setup(struct isp1763_udc *dev)
 
 	/* CLASS / VENDOR REQUEST */
 non_standard:
-	debug_printk(KERN_ERR
-			"Processing EP0 class/vendor request\n");
+	pr_debug("Processing EP0 class/vendor request\n");
 
-	if (setup_request->bRequestType & USB_DIR_IN) {
+	if (req.bRequestType & USB_DIR_IN) {
 		info_printk(KERN_ERR "CLASS IN REQUEST\n");
 		dev->ep0->state = DIR_TX;
 	} else {
@@ -699,9 +704,8 @@ non_standard:
 			if (++timeout > 1000) {
 				printk(KERN_EMERG "TIMEOUT!\n");
 				break;
-			ep_set_index(dev, EP_INDEX(0, DIR_RX));
-
 			}
+			ep_set_index(dev, EP_INDEX(0, DIR_RX));
 		}
 #endif
 		pr_debug("CLASS OUT REQUEST\n");
@@ -724,7 +728,7 @@ non_standard:
 	}
 
 	/* Probably a class request */
-	ret = dev->driver->setup(dev->gadget, setup_request);
+	ret = dev->driver->setup(dev->gadget, &req);
 	if (ret < 0) {
 		printk(KERN_ERR "dev->driver->setup() returned %i!"
 			"stalling ep0...\n", ret);
@@ -732,7 +736,7 @@ non_standard:
 		return;
 	}
 
-	if (setup_request->bRequestType & USB_DIR_IN) {
+	if (req.bRequestType & USB_DIR_IN) {
 		/* ??? */
 	} else {
 		ep_set_index(dev, EP_INDEX(0, DIR_RX));
@@ -799,14 +803,14 @@ static int isp1763_udc_ep_enable(struct usb_ep *ep,
 		return -ENOMEM;
 	}
 
-	local_irq_save(flags);
+	spin_lock_irqsave(&dev->lock, flags);
 
 	ep_index = get_ep_index(ep);
 	if (ep_index < 0) {
 		error_printk(KERN_ERR
 			     "%s:%i: %s INVALID ENDPOINT INDEX %i\n",
 			     __FILE__, __LINE__, __func__, ep_index);
-		local_irq_restore(flags);
+		spin_unlock_irqrestore(&dev->lock, flags);
 		return -EINVAL;
 	}
 
@@ -840,12 +844,14 @@ static int isp1763_udc_ep_enable(struct usb_ep *ep,
 
 	memcpy(&ispep->desc, desc, sizeof(struct usb_endpoint_descriptor));
 
+#if 0
 	irq_bits |= 1 << (ep_index + 12);
 	isp1763_writew(irq_bits, &dev->regs->dc_int_enable);
 	/* printk(KERN_ERR "Enabling bit %.8lx in irq_bits\n",
 	 *      1 << (ep_index + 10));
 	 */
-	local_irq_restore(flags);
+#endif
+	spin_unlock_irqrestore(&dev->lock, flags);
 	return 0;
 }
 
@@ -863,23 +869,25 @@ static int isp1763_udc_ep_disable(struct usb_ep *ep)
 	info_printk(KERN_ERR "%s:%i: %s(%s)\n", __FILE__, __LINE__,
 		    __func__, ep->name);
 
-	local_irq_save(flags);
+	spin_lock_irqsave(&dev->lock, flags);
 
 	ep_index = get_ep_index(ep);
 	if (ep_index < 0) {
 		error_printk(KERN_ERR
 			     "%s:%i: %s INVALID ENDPOINT INDEX %i\n",
 			     __FILE__, __LINE__, __func__, ep_index);
-		local_irq_restore(flags);
+		spin_unlock_irqrestore(&dev->lock, flags);
 		return -EINVAL;
 	}
 
 
+#if 0
 	irq_bits &= ~(1 << (ep_index + 12));
 	isp1763_writew(irq_bits, &dev->regs->dc_int_enable);
 	/* printk(KERN_ERR "Disabling bit %.8lx in irq_bits\n",
 	 * 1 << (ep_index + 10));
 	 */
+#endif
 
 	ispep = &isp_eps[ep_index];
 	dev = ispep->udc;
@@ -890,7 +898,7 @@ static int isp1763_udc_ep_disable(struct usb_ep *ep)
 
 	ep_set_index(dev, ispep->index);
 	isp1763_writew(0, &dev->regs->ep_type);
-	local_irq_restore(flags);
+	spin_unlock_irqrestore(&dev->lock, flags);
 
 	return 0;
 }
@@ -923,34 +931,26 @@ static void isp1763_udc_ep_free_request(struct usb_ep *ep,
 * @req: request to queue
 * @gfp_flags: unused
 */
-static int
-isp1763_udc_ep_queue(struct usb_ep *ep, struct usb_request *req,
-		     gfp_t gfp_flags)
+static int isp1763_udc_ep_queue(struct usb_ep *ep, struct usb_request *req,
+				gfp_t gfp_flags)
 {
 	unsigned long flags;
-	struct isp1763_ep *ispep = usb_ep_to_isp1763_ep(ep);
 	struct isp1763_udc *dev = &udc_dev;
+	int ret;
 
-	local_irq_save(flags);
+	if (!req || !req->complete || !req->buf)
+		return -EINVAL;
 
-	disable_glint(dev);
-
-	pr_debug("%s(%s) %i bytes %p\n", __func__, ep->name, req->length, req);
-
-	if (req->buf == NULL && req->length > 0) {
-		error_printk(KERN_ERR "%s: INVALID REQUEST\n",
-			     __func__);
-		req->status = -EINVAL;
-		local_irq_restore(flags);
-		enable_glint(dev);
-		return req->status;
-	}
+	pr_info("%s(%s) %i bytes %p\n", __func__, ep->name, req->length, req);
 
 	req->status = -EINPROGRESS;
 	req->actual = 0;
 
+	disable_glint(dev);
+	spin_lock_irqsave(&dev->lock, flags);
+
 	if (ep == udc_dev.gadget->ep0) {
-		queue_add(&udc_dev.ep0->queue, req);
+		queue_add(&udc_dev.ep0->queue, req, gfp_flags);
 
 		if (udc_dev.ep0->state == DIR_TX) {
 			pr_debug("QUEUE EP0 TX PACKET\n");
@@ -986,9 +986,8 @@ more:
 				       "%s ERROR: buflen == 0, bufstatus=%.4x\n",
 				       __func__,
 				       isp1763_readw(&dev->regs->dcbufstatus));
-				local_irq_restore(flags);
-				enable_glint(&udc_dev);
-				return -EAGAIN;
+				ret = -EAGAIN;
+				goto out;
 			}
 
 			ret = read_ep0(udc_dev.ep0, req);
@@ -999,7 +998,7 @@ more:
 						"p=%p ep=%p\n",
 						req, req->actual,
 						req->complete, ep);
-						req->complete(ep, req);
+					req->complete(ep, req);
 				}
 			} else if (ret == 0)
 				goto more;
@@ -1014,13 +1013,12 @@ more:
 		if (ep_index < 0) {
 			error_printk(KERN_ERR
 				     "ERROR: INVALID EP POINTER %p\n", ep);
-			local_irq_restore(flags);
-			enable_glint(dev);
-			return -EINVAL;
+			ret = -EINVAL;
+			goto out;
 		}
 
 		ispep = &isp_eps[ep_index];
-		queue_add(&ispep->queue, req);
+		queue_add(&ispep->queue, req, gfp_flags);
 
 		/* IN transfer */
 		if (GET_EP_DIR(ep_index) == DIR_TX)
@@ -1040,9 +1038,11 @@ more:
 		}
 	}
 
-	local_irq_restore(flags);
+	ret = 0;
+out:
+	spin_unlock_irqrestore(&dev->lock, flags);
 	enable_glint(dev);
-	return 0;
+	return ret;
 }
 
 /**
@@ -1060,12 +1060,6 @@ isp1763_udc_ep_dequeue(struct usb_ep *ep, struct usb_request *req)
 }
 
 static int isp1763_udc_ep_set_halt(struct usb_ep *ep, int value)
-{
-	pr_err("%s:%i: %s(%s)\n", __FILE__, __LINE__, __func__, ep->name);
-	return 0;
-}
-
-static int isp1763_udc_ep_set_wedge(struct usb_ep *ep)
 {
 	pr_err("%s:%i: %s(%s)\n", __FILE__, __LINE__, __func__, ep->name);
 	return 0;
@@ -1090,7 +1084,6 @@ static struct usb_ep_ops isp1763_ep_ops = {
 	.queue = isp1763_udc_ep_queue,
 	.dequeue = isp1763_udc_ep_dequeue,
 	.set_halt = isp1763_udc_ep_set_halt,
-	.set_wedge = isp1763_udc_ep_set_wedge,
 	.fifo_status = isp1763_udc_ep_fifo_status,
 	.fifo_flush = isp1763_udc_ep_fifo_flush,
 };
@@ -1176,20 +1169,18 @@ static struct usb_gadget_ops isp1763_gadget_ops = {
 * usb_gadget_register_driver - register gadget driver
 * @driver: gadget driver to register
 */
-int usb_gadget_register_driver(struct usb_gadget_driver *driver)
+int usb_gadget_probe_driver(struct usb_gadget_driver *driver, int (*bind)(struct usb_gadget *))
 {
 	if (!driver ||
-	    !driver->bind ||
+	    !bind ||
 	    !driver->unbind ||
 	    !driver->setup /* || driver->speed != USB_SPEED_HIGH */ ) {
 		return -EINVAL;
 	}
 
-	pr_info("%s: registering gadget function '%s'\n", __func__, driver->function);
-
 	udc_dev.driver = driver;
 
-	udc_dev.driver->bind(udc_dev.gadget);
+	bind(udc_dev.gadget);
 
 	if (udc_dev.ctrl.active) {
 		pr_info("active\n");
@@ -1197,9 +1188,11 @@ int usb_gadget_register_driver(struct usb_gadget_driver *driver)
 		isp1763_udc_enable(&udc_dev);
 	}
 
+	pr_info("bind to driver '%s'\n", driver->driver.name);
+
 	return 0;
 }
-EXPORT_SYMBOL_GPL(usb_gadget_register_driver);
+EXPORT_SYMBOL_GPL(usb_gadget_probe_driver);
 
 /**
 * usb_gadget_unregister_driver - unregister gadget driver
@@ -1267,6 +1260,8 @@ static int setup_ep_struct(struct isp1763_udc *dev)
 	int i = 0;
 
 	dev->ep0 = kzalloc(sizeof(struct isp_ep), GFP_ATOMIC);
+	if (dev->ep0 == NULL)
+		return -ENOMEM;
 
 	INIT_LIST_HEAD(&dev->gadget->ep_list);
 	dev->ep0->queue = NULL;
@@ -1296,6 +1291,8 @@ static int setup_ep_struct(struct isp1763_udc *dev)
 			      &dev->gadget->ep_list);
 
 	}
+
+	return 0;
 }
 
 static void destroy_ep_struct(struct isp1763_udc *dev)
@@ -1325,13 +1322,11 @@ static void handle_ep_irq(struct isp1763_udc *dev, int bit)
 
 	ispep = &dev->eps[bit];
 
-	pr_debug("Interrupt for EP %s (Bit %i, epindex %i)\n",
+	pr_info("Interrupt for EP %s (Bit %i, epindex %i)\n",
 			ispep->name, bit, ep_index);
 
 	if (queue_empty(&ispep->queue)) {
-		queue_printk(KERN_ERR "%s/%s queue empty!\n",
-				ispep->name,
-				ispep->ep.name);
+		pr_info("%s/%s queue empty!\n", ispep->name, ispep->ep.name);
 		goto done;
 	}
 
@@ -1347,6 +1342,7 @@ static void handle_ep_irq(struct isp1763_udc *dev, int bit)
 			* check if there's more data to write for
 			* previous packet, otherwise send completion
 		*/
+		pr_info("actual = %u, length = %u\n", req->actual, req->length);
 		if (req->actual == req->length) {
 			if (req->actual > 0
 				&& req->actual % 512 == 0) {
@@ -1360,10 +1356,8 @@ static void handle_ep_irq(struct isp1763_udc *dev, int bit)
 			req->status = 0;
 
 			if (req->complete) {
-				debug_printk
-					(KERN_ERR
-					"Completing IN request %p (%i bytes)\n",
-					req, req->actual);
+				pr_info("Completing IN request %p (%i bytes)\n",
+					 req, req->actual);
 				req->complete(&ispep->ep, req);
 			}
 			queue_topkill(&ispep->queue);
@@ -1410,23 +1404,33 @@ done:
 * isp1763_udc_do_irq - UDC interrupt handler
 * @ctrl: controller pointer
 */
-static int isp1763_udc_do_irq(struct isp1763_controller *ctrl, u32 flags)
+static int isp1763_udc_do_irq(struct isp1763_controller *ctrl, u32 _flags)
 {
 	struct isp1763_udc *dev = ctrl->priv;
-	u32 interrupts = 0;
-	int bit = 0;
+	u32 interrupts;
+	u32 irqs;
 	int i;
+	unsigned long flags;
 
-	isp1763_writew(UNLOCK_CODE, &dev->regs->unlock);
-	disable_glint(dev);
+	spin_lock_irqsave(&dev->lock, flags);
 
+#if 1
 	isp1763_writel(irq_bits,
 		       &dev->regs->dc_int_enable);
-	interrupts = flags & irq_bits;
+	pr_info("dc_int_enable = %08x\n", irq_bits);
+	pr_info("interrupts = %08x\n", _flags);
+	interrupts = _flags & irq_bits;
+#endif
+	irqs = isp1763_readl(&dev->regs->dc_int_enable);
+	interrupts = _flags & irqs;
+	pr_info("interrupts = %08x\n", interrupts);
 
+#if 0
 	isp1763_otg_timer_cancel();
 	isp1763_otg_timer_start((otgtimer_callback_t) isp1763_udc_do_irq,
-				100, ctrl);
+				1000, ctrl);
+#endif
+	ndelay(200);
 	for (i = 1; i < USB_MAX_ENDPOINTS; i += 2) {
 		struct isp_ep *ispep = &udc_dev.eps[i];
 		if (queue_count(&ispep->queue) > 0) {
@@ -1438,21 +1442,23 @@ static int isp1763_udc_do_irq(struct isp1763_controller *ctrl, u32 flags)
 		}
 	}
 
-	if (!interrupts)
+	if (!interrupts) {
+		spin_unlock_irqrestore(&dev->lock, flags);
 		return 0;
+	}
 
 #if 0
 	printk(KERN_ERR "dev->regs->dc_int_enable: %.8lx\n",
 		isp1763_readl(&dev->regs->dc_int_enable));
 	printk(KERN_ERR "%s() flags = %.8lx irqbits = %.8lx\n",
-		__func__, flags, irq_bits);
+		__func__, _flags, irq_bits);
 #endif
 	/* VBUS event */
 	if (interrupts & MASK_DCINT_VBUS) {
 		u16 mode = isp1763_readw(&dev->regs->mode);
 
 		/* Double negation (!!) used to make bitmask into boolean */
-		pr_debug("VBUS interrupt (Vbus = %i)\n",
+		pr_debug(" VBUS interrupt (Vbus = %i)\n",
 			     !!(mode & MASK_MODE_VBUSSTAT));
 		if (mode & MASK_MODE_VBUSSTAT) {
 			isp1763_writel(MASK_OTGCTRL_DP_PULLUP |
@@ -1465,7 +1471,7 @@ static int isp1763_udc_do_irq(struct isp1763_controller *ctrl, u32 flags)
 
 	/* Control endpoint setup event */
 	if (interrupts & MASK_DCINT_EP0SETUP) {
-		pr_debug("EP0 SETUP event\n");
+		pr_debug(" EP0 SETUP event\n");
 		handle_ep0_setup(dev);
 	}
 
@@ -1474,7 +1480,7 @@ static int isp1763_udc_do_irq(struct isp1763_controller *ctrl, u32 flags)
 		struct usb_request *req;
 		int written = 0;
 
-		pr_debug("EP0 TX\n");
+		pr_debug(" EP0 TX\n");
 
 		if (dev->ep0->state == DIR_RX)
 			goto done;
@@ -1518,13 +1524,13 @@ static int isp1763_udc_do_irq(struct isp1763_controller *ctrl, u32 flags)
 						      req);
 			queue_topkill(&dev->ep0->queue);
 		}
-
-		pr_debug("EP0 TX event\n");
 	}
 
 	/* EP0 RX */
 	if (interrupts & MASK_DCINT_EP0RX) {
 		struct usb_request *req;
+
+		pr_debug(" EP0 RX\n");
 
 		ep_set_index(dev, EP_INDEX(0, DIR_RX));
 		if (isp1763_readw(&dev->regs->buflen) == 0) {
@@ -1545,15 +1551,13 @@ static int isp1763_udc_do_irq(struct isp1763_controller *ctrl, u32 flags)
 		read_ep(dev->ep0, req);
 		set_status_flag(dev);
 		queue_topkill(&dev->ep0->queue);
-
-		debug_printk(KERN_ERR "EP0 RX event\n");
 	}
 
 	/* BUS reset */
 	if (interrupts & MASK_DCINT_BRESET) {
 		int i;
 #if 1
-		pr_debug("BUS reset detected\n");
+		pr_debug(" BUS reset detected\n");
 		dev->gadget->speed = USB_SPEED_FULL;
 		for (i = 0; i < 14; i++)
 			isp1763_udc_ep_disable(&dev->eps[i].ep);
@@ -1562,12 +1566,13 @@ static int isp1763_udc_do_irq(struct isp1763_controller *ctrl, u32 flags)
 
 	/* Highspeed status change */
 	if (interrupts & MASK_DCINT_HS_STAT) {
-		pr_debug("Speed change detected\n");
+		pr_debug(" Speed change detected\n");
 		dev->gadget->speed = USB_SPEED_HIGH;
 	}
 
 	/* EP interrupts */
 	if (interrupts & MASK_DCINT_EP_EVENT) {
+		unsigned int bit;
 		for (bit = 0; bit < 14; bit++) {
 			if ((interrupts & (1 << (12 + bit))) == 0)
 				continue;
@@ -1576,7 +1581,7 @@ static int isp1763_udc_do_irq(struct isp1763_controller *ctrl, u32 flags)
 	}
 
 done:
-	enable_glint(dev);
+	spin_unlock_irqrestore(&dev->lock, flags);
 	return 0;
 }
 
@@ -1634,6 +1639,7 @@ static void isp1763_dc_release(struct device *dev)
 static int isp1763_udc_probe(struct isp1763_controller *ctrl)
 {
 	struct isp1763_udc *dev = ctrl->priv;
+	int ret;
 	int i;
 
 	dev->regs = ctrl->regs;
@@ -1652,11 +1658,15 @@ static int isp1763_udc_probe(struct isp1763_controller *ctrl)
 	set_gadget_data(&controller->gadget, &controller);
 #endif
 	set_gadget_data(dev->gadget, &udc_dev);
-	setup_ep_struct(dev);
+	ret = setup_ep_struct(dev);
+	if (ret)
+		return ret;
 
 	dev_set_name(&udc_dev.gadget->dev, "gadget");
 	udc_dev.gadget->dev.release = isp1763_dc_release;
-	device_register(&udc_dev.gadget->dev);
+	ret = device_register(&udc_dev.gadget->dev);
+	if (ret)
+		return ret;
 
 	udc_dev.eps = isp_eps;
 
@@ -1664,6 +1674,10 @@ static int isp1763_udc_probe(struct isp1763_controller *ctrl)
 		pr_debug("EP %i (%s/%s)\n", i,
 			    udc_dev.eps[i].name, udc_dev.eps[i].ep.name);
 	}
+
+
+	spin_lock_init(&udc_dev.lock);
+
 	return 1;
 }
 

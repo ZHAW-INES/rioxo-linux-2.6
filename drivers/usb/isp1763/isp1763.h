@@ -109,11 +109,14 @@ struct isp1763_regs {
 	u32 otg_ctrl;            /* 0xE4 OTG control set & clear */
 	u16 otg_status;          /* 0xE8 OTG status set & clear */
 	u16 reserved026;
-	u32 otg_int_latch;       /* 0xEC OTG interrupt latch set & clear */
+	u16 otg_int_latch_set;   /* 0xEC OTG interrupt latch set */
+	u16 otg_int_latch_clear; /* 0xEE OTG interrupt latch clear */
 	u32 otg_int_enable_fall; /* 0xF0 OTG interrupt falling set & clr */
 	u32 otg_int_enable_rise; /* 0xF4 OTG interrupt rising set & clr */
-	u32 otg_timer_lw;	 /* 0xF8 OTG timer configuration low word */
-	u32 otg_timer_hw;	 /* 0xFC OTG timer configuration high word */
+	u16 otg_timer_lw_set;	 /* 0xF8 OTG timer configuration low word set */
+	u16 otg_timer_lw_clear;	 /* 0xFA OTG timer configuration low word clear */
+	u16 otg_timer_hw_set;	 /* 0xFC OTG timer configuration high word set */
+	u16 otg_timer_hw_clear;	 /* 0xFE OTG timer configuration high word clear */
 } __attribute__ ((packed,aligned(1)));
 
 /** struct isp1763_controller - common struct for interface and private data
@@ -250,8 +253,8 @@ struct isp1763_dev {
 #define MASK_DCINT_EP7RX	(1 << 24)
 #define MASK_DCINT_EP7TX	(1 << 25)
 
-#define MASK_DCINT_EP_EVENT		(0x03FFF000)
-#define MASK_DCINTENABLE_RELEVANT	0x00000DF9
+#define MASK_DCINT_EP_EVENT		0x03FFF000
+#define MASK_DCINTENABLE_RELEVANT	0x03FFFDF9
 #define UNLOCK_CODE			0xAA37
 
 #define MASK_CTRL_STALL		(1 << 0)
