@@ -25,6 +25,7 @@
  */
 #include <linux/device.h>
 #include <linux/module.h>
+#include <linux/moduleparam.h>
 #include <linux/kernel.h>
 #include <linux/ioport.h>
 #include <linux/types.h>
@@ -85,6 +86,42 @@ static const char driver_desc[] = "ISP 1763A device controller driver";
 static struct task_struct *otgtask;
 static char *role[] = { "HOST", "PERIPHERAL" };
 
+static unsigned int otg_role;
+module_param(otg_role, int, S_IRUGO | S_IWUSR);
+
+/* sysfs file to show otg role */
+static ssize_t show_otg_role(struct device *dev, struct device_attribute *attr,
+			     char *buf)
+{
+	return snprintf(buf, PAGE_SIZE, "%d\n", otg_role);
+}
+
+static ssize_t store_otg_role(struct device *dev, struct device_attribute *attr,
+			      const char *buf, size_t count)
+{
+	unsigned long val;
+
+	if (strict_strtoul(buf, 10, &val) != 0)
+		return -EINVAL;
+
+	if (val != 0 && val != 1)
+		return -EINVAL;
+
+	otg_role = val;
+	return count;
+}
+
+static DEVICE_ATTR(otg_role, S_IRUGO | S_IWUSR, show_otg_role, store_otg_role);
+
+static struct attribute *dev_attrs[] = {
+	&dev_attr_otg_role.attr,
+	NULL,
+};
+
+const struct attribute_group dev_attr_group = {
+	.attrs = dev_attrs,
+};
+
 /**
  * otg_set_role - set/switch role between host and device
  * @dev: isp1763_dev structure
@@ -129,6 +166,9 @@ int otg_role_switcher(void *data)
 
 	printk(KERN_ERR "%s starting up...\n", __func__);
 
+	/* Set this once, so we can override it by sysfs afterwards */
+	otg_role = 0;
+
 	while (!kthread_should_stop()) {
 
 		schedule_timeout_interruptible(1);
@@ -136,8 +176,14 @@ int otg_role_switcher(void *data)
 		if (kthread_should_stop())
 			break;
 
+#if 0
 		id_pin = get_id_pin(dev);
 		if (id_pin == dev->current_role)
+			continue;
+#endif
+		if (otg_role != dev->current_role)
+			id_pin = otg_role;
+		else
 			continue;
 
 		printk(KERN_ERR "%s: init role change %s => %s\n", __func__,
@@ -175,10 +221,9 @@ int otg_role_switcher(void *data)
 */
 static void otg_do_interrupt(struct isp1763_dev *dev, u32 latch)
 {
-
 	if ((latch & MASK_OTGSTATUS_ID)
 	    && !static_role(dev->devflags)) {
-		wake_up_process(otgtask);
+//		wake_up_process(otgtask);
 	} else if (latch & MASK_OTGSTATUS_ID) {
 		printk(KERN_EMERG "Ignoring OTG event\n");
 	}
@@ -194,35 +239,48 @@ static void otg_do_interrupt(struct isp1763_dev *dev, u32 latch)
  */
 static irqreturn_t isp1763_irq(int irq, void *data)
 {
-	struct isp1763_dev *dev = (struct isp1763_dev *) data;
+	struct isp1763_dev *dev = data;
 	u32 flags_hc;
 	u32 flags_dc;
-	u32 flags_otg;
+	u16 flags_otg;
 
 	isp1763_writew(UNLOCK_CODE, &dev->regs->unlock);
 
-	flags_dc = isp1763_readl(&dev->regs->dc_interrupt);
-	isp1763_writel(flags_dc, &dev->regs->dc_interrupt);
-	flags_hc = isp1763_readw(&dev->regs->hc_interrupt);
-	isp1763_writew(flags_hc, &dev->regs->hc_interrupt);
-	flags_otg = isp1763_readl(&dev->regs->otg_int_latch);
-	isp1763_writel(0xFFFF0000, &dev->regs->otg_int_latch);
+	disable_glint(dev);
+
+#if 0
+	flags_otg = isp1763_readw(&dev->regs->otg_int_latch_set);
+	isp1763_writew(0xFFFF, &dev->regs->otg_int_latch_clear);
+#endif
 
 	pr_debug("%.8lx %.4x %.8lx\n", flags_dc, flags_hc, flags_otg);
 
+#if 0
 	if (flags_otg)
 		otg_do_interrupt(dev, flags_otg);
+#endif
+
 	if (dev->current_role == ROLE_HOST) {
+		flags_hc = isp1763_readw(&dev->regs->hc_interrupt);
+		isp1763_writew(flags_hc, &dev->regs->hc_interrupt);
+
 		if (flags_hc && dev->ctrl[ROLE_HOST]
 				/*&& dev->ctrl[ROLE_HOST]->do_irq*/)
 			dev->ctrl[ROLE_HOST]->
 				do_irq(dev->ctrl[ROLE_HOST], flags_hc);
 	} else {
+		flags_dc = isp1763_readl(&dev->regs->dc_interrupt);
+		isp1763_writel(flags_dc, &dev->regs->dc_interrupt);
+
+		pr_info("DC IRQ %08x\n", flags_dc);
+
 		if (flags_dc && dev->ctrl[ROLE_DEVICE]
 				/*&& dev->ctrl[ROLE_DEVICE]->do_irq*/)
 			dev->ctrl[ROLE_DEVICE]->
 				do_irq(dev->ctrl[ROLE_DEVICE], flags_dc);
 	}
+
+	enable_glint(dev);
 
 	return IRQ_HANDLED;
 }
@@ -361,10 +419,13 @@ static int otg_setup(struct isp1763_dev *dev)
 {
 	int role = ROLE_DEVICE;
 
+#if 0
 	if (static_role_host(dev->devflags))
 		role = ROLE_HOST;
 	else
 		role = get_id_pin(dev);
+#endif
+	role = otg_role;
 
 	printk(KERN_NOTICE "ISP1783 using %s mode\n",
 				static_role(dev->devflags) ?
@@ -374,10 +435,12 @@ static int otg_setup(struct isp1763_dev *dev)
 	otg_set_role(dev, role);
 
 	enable_glint(dev);
+
 	isp1763_writel(0xFFFF0000, &dev->regs->otg_int_enable_fall);
 	isp1763_writel(0xFFFF0000, &dev->regs->otg_int_enable_rise);
-	isp1763_writel(0xFFFFFFFF, &dev->regs->otg_int_latch);
+	isp1763_writew(0xFFFF, &dev->regs->otg_int_latch_clear);
 
+#if 0
 	isp1763_writel(MASK_OTGINTEN_ID | MASK_OTGINTEN_SESS_VALID |
 		       MASK_OTGINTEN_VBUS_VALID |
 		       MASK_OTGINTEN_TMR_TIMEOUT,
@@ -387,6 +450,7 @@ static int otg_setup(struct isp1763_dev *dev)
 		       MASK_OTGINTEN_VBUS_VALID |
 		       MASK_OTGINTEN_TMR_TIMEOUT,
 		       &dev->regs->otg_int_enable_rise);
+#endif
 
 	ispdev->current_role = role;
 
@@ -403,18 +467,18 @@ int isp1763_otg_timer_start(otgtimer_callback_t cb,
 				unsigned long timeout,
 				void *data)
 {
-	if (isp1763_readl(&ispdev->regs->otg_timer_hw) & 0x8000)
+	if (isp1763_readw(&ispdev->regs->otg_timer_hw_set) & 0x8000)
 		return -EBUSY;
 
 	ispdev->otgtimer_cb = cb;
 	ispdev->otgtimer_data = data;
 
-	isp1763_writel(0xFFFF0000, &ispdev->regs->otg_timer_lw);
-	isp1763_writel(0xFFFF0000, &ispdev->regs->otg_timer_hw);
+	isp1763_writew(0xFFFF, &ispdev->regs->otg_timer_lw_clear);
+	isp1763_writew(0xFFFF, &ispdev->regs->otg_timer_hw_clear);
 
-	isp1763_writel(timeout & 0xFFFF, &ispdev->regs->otg_timer_lw);
-	isp1763_writel(((timeout >> 16) & 0x7FFF) | 0x8000,
-			       &ispdev->regs->otg_timer_hw);
+	isp1763_writew(timeout & 0xFFFF, &ispdev->regs->otg_timer_lw_set);
+	isp1763_writew(((timeout >> 16) & 0x00FF) | 0x8000,
+			       &ispdev->regs->otg_timer_hw_set);
 	return 0;
 }
 EXPORT_SYMBOL_GPL(isp1763_otg_timer_start);
@@ -426,8 +490,8 @@ EXPORT_SYMBOL_GPL(isp1763_otg_timer_start);
 */
 void isp1763_otg_timer_cancel(void)
 {
-	isp1763_writel(isp1763_readl(&ispdev->regs->otg_timer_hw) & 0x7FFF,
-		       &ispdev->regs->otg_timer_hw);
+	isp1763_writew(isp1763_readl(&ispdev->regs->otg_timer_hw_set) & 0x7FFF,
+		       &ispdev->regs->otg_timer_hw_set);
 	ispdev->otgtimer_cb = NULL;
 	ispdev->otgtimer_data = NULL;
 }
@@ -528,11 +592,13 @@ static int isp1763_common_init(struct device *dev,
 	if (!ispdev)
 		return -ENOMEM;
 
-	printk(KERN_ERR "devflags passed by probe: 0x%.8lx\n", devflags);
-
 	ispdev->irq = irq;
 	ispdev->devflags = devflags;
-	ispdev->regs = ioremap(res->start, res_len);
+	ispdev->regs = ioremap_nocache(res->start, res_len);
+	if (!ispdev->regs) {
+		ret = -ENOMEM;
+		goto out_free;
+	}
 
 	ret = request_irq(ispdev->irq, isp1763_irq, IRQF_SHARED, "ISP1763 IRQ",
 							(void *) ispdev);
@@ -542,6 +608,7 @@ static int isp1763_common_init(struct device *dev,
 	isp1763_init_device(ispdev);
 	otg_setup(ispdev);
 
+#if 0
 	/* Only start role switch thread if we're doing OTG */
 	if (!static_role(ispdev->devflags)) {
 		otgtask = kthread_run(otg_role_switcher, ispdev,
@@ -552,10 +619,15 @@ static int isp1763_common_init(struct device *dev,
 			goto out_free;
 		}
 	}
+#endif
 
 	ispdev->dev = dev;
 
-	printk(KERN_INFO "%s initialization successfully\n", DRIVER_NAME);
+	ret = sysfs_create_group(&dev->kobj, &dev_attr_group);
+	if (ret) {
+		pr_err("failed to create sysfs files\n");
+		return ret;
+	}
 
 	return 0;
 
@@ -878,7 +950,6 @@ static int __devinit isp1763_plat_probe(struct platform_device *pdev)
 	resource_size_t mem_size;
 	struct isp1763_platform_data *priv = pdev->dev.platform_data;
 	unsigned int devflags = 0;
-	unsigned long irqflags = IRQF_SHARED | IRQF_DISABLED;
 
 	mem_res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	if (!mem_res) {
@@ -899,17 +970,16 @@ static int __devinit isp1763_plat_probe(struct platform_device *pdev)
 		pr_warning("isp1763: IRQ resource not available\n");
 		return -ENODEV;
 	}
-	irqflags |= irq_res->flags & IRQF_TRIGGER_MASK;
 
 	if (priv) {
 		if (priv->bus_width_8)
 			devflags |= ISP1763_FLAG_BUS_WIDTH_8;
+#if 0
 		if (priv->port1_otg == 1)
 			devflags |= ISP1763_FLAG_PORT1_ROLE_OTG;
-		else if (priv->port1_otg == 2)
-			devflags |= ISP1763_FLAG_PORT1_ROLE_GADGET;
 		else
 			devflags |= ISP1763_FLAG_PORT1_ROLE_HOST;
+#endif
 
 		if (priv->dack_polarity_high)
 			devflags |= ISP1763_FLAG_DACK_POL_HIGH;
@@ -925,7 +995,6 @@ static int __devinit isp1763_plat_probe(struct platform_device *pdev)
 						mem_res, mem_size) < 0)
 		goto cleanup;
 
-	pr_info("ISP1763 USB device initialised\n");
 	return ret;
 
 cleanup:
@@ -935,7 +1004,6 @@ out:
 }
 
 static struct platform_driver isp1763_plat_driver = {
-	.probe = isp1763_plat_probe,
 	.remove = __devexit_p(isp1763_plat_remove),
 	.driver = {
 		.name = "isp1763",
@@ -947,7 +1015,7 @@ static int __init isp1763_init(void)
 	int ret = 0;
 	int any_ret = -ENODEV;
 
-	ret = platform_driver_register(&isp1763_plat_driver);
+	ret = platform_driver_probe(&isp1763_plat_driver, isp1763_plat_probe);
 	if (!ret)
 		any_ret = 0;
 
