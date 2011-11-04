@@ -57,6 +57,17 @@
 #define ISP1763_DC_INT_EP0TX		0x00000800
 #define ISP1763_DC_INT_EP_ANY		0x03FFF000
 
+#define ISP1763_DC_INT_EN_DEFAULT	(ISP1763_DC_INT_EP0SETUP	\
+					 | ISP1763_DC_INT_EP0RX		\
+					 | ISP1763_DC_INT_EP0TX		\
+					 | ISP1763_DC_INT_VBUS		\
+					 | ISP1763_DC_INT_HS_STA	\
+					 | ISP1763_DC_INT_SUSP		\
+					 | ISP1763_DC_INT_BRESET	\
+					 | ISP1763_DC_INT_SUSP		\
+					 | ISP1763_DC_INT_RESM		\
+					 | ISP1763_DC_INT_EP_ANY)	/* TMP */
+
 #define ISP1763_CTRL_FUNC_STALL		0x0001
 #define ISP1763_CTRL_FUNC_STATUS	0x0002
 #define ISP1763_CTRL_FUNC_DSEN		0x0004
@@ -88,7 +99,10 @@
 #define ISP1763_CHIP_ID			0x00176320
 #define ISP1763_UNLOCK_CODE		0xAA37
 
-#define ISP1763_UDC_MAX_ENDPOINTS	14
+#define ISP1763_UDC_MAX_ENDPOINTS	15
+
+#define ISP1763_USB_REQ_CLASS		0x20
+#define ISP1763_USB_REQ_VENDOR		0x40
 
 struct isp1763_udc;
 
@@ -96,13 +110,13 @@ struct isp1763_ep {
 	struct usb_ep ep;
 	struct list_head queue;
 	struct isp1763_udc *udc;
-	unsigned int maxpacketsize;
 	char name[8];
-	u8 index;
+	u8 num;
+	u8 dir;
 };
 
-#define WINDEX_TO_ISP1763_EP_INDEX(x)	(((x & 0x0F) << 1) | (x >> 7))
-#define ISP1763_EP0_INDEX(is_tx)	(!!(is_tx))
+#define WINDEX_TO_EP_INDEX(x)	(((x & 0x0F) << 1) | (x >> 7))
+#define EP_INDEX(ep, dir)	(((ep) << 1) | (dir))
 
 struct isp1763_udc {
 	void __iomem *base;
@@ -125,7 +139,7 @@ struct isp1763_request {
 
 static inline bool isp1763_ep_is_tx(struct isp1763_ep *ep)
 {
-	return ep->index & 1;
+	return ep->dir == ISP1763_EP_INDEX_DIR_TX;
 }
 
 #define __REG(x)	((x) << 2)
