@@ -10,7 +10,7 @@
  * the Free Software Foundation; version 2 of the License.
  */
 
-#define DEBUG
+//#define DEBUG
 
 #define pr_fmt(fmt)	KBUILD_MODNAME ": " fmt
 
@@ -43,6 +43,7 @@ static void isp1763_udc_complete_req(struct isp1763_ep *ep,
 				     struct isp1763_request *req, int status)
 {
 	/* remove request from ep queue */
+	dev_dbg(ep->udc->dev, "completing request on EP%d%s\n", ep->num, isp1763_ep_is_tx(ep) ? "TX" : "RX");
 	list_del_init(&req->queue);
 	if (req->req.status == -EINPROGRESS)
 		req->req.status = status;
@@ -70,6 +71,12 @@ static void isp1763_udc_set_clbuf(struct isp1763_udc *udc)
 	isp1763_writew(udc, tmp | ISP1763_CTRL_FUNC_CLBUF, ISP1763_REG_CTRL_FUNC);
 }
 
+static void isp1763_udc_clear_clbuf(struct isp1763_udc *udc)
+{
+	u16 tmp = isp1763_readw(udc, ISP1763_REG_CTRL_FUNC);
+	isp1763_writew(udc, tmp & ~ISP1763_CTRL_FUNC_CLBUF, ISP1763_REG_CTRL_FUNC);
+}
+
 static void isp1763_udc_set_vendp(struct isp1763_udc *udc)
 {
 	u16 tmp = isp1763_readw(udc, ISP1763_REG_CTRL_FUNC);
@@ -82,6 +89,12 @@ static void isp1763_udc_set_dsen(struct isp1763_udc *udc)
 	isp1763_writew(udc, tmp | ISP1763_CTRL_FUNC_DSEN, ISP1763_REG_CTRL_FUNC);
 }
 
+static void isp1763_udc_clear_dsen(struct isp1763_udc *udc)
+{
+	u16 tmp = isp1763_readw(udc, ISP1763_REG_CTRL_FUNC);
+	isp1763_writew(udc, tmp & ~ISP1763_CTRL_FUNC_DSEN, ISP1763_REG_CTRL_FUNC);
+}
+
 static void isp1763_udc_set_status(struct isp1763_udc *udc)
 {
 	u16 tmp = isp1763_readw(udc, ISP1763_REG_CTRL_FUNC);
@@ -91,23 +104,60 @@ static void isp1763_udc_set_status(struct isp1763_udc *udc)
 static void isp1763_udc_set_ep_index(struct isp1763_udc *udc, u8 index)
 {
 	isp1763_writew(udc, index, ISP1763_REG_EP_INDEX);
-//	isp1763_writew(udc, ~index, ISP1763_REG_EP_INDEX); TODO: why inverted value?
-	ndelay(400);
+	isp1763_writew(udc, ~index, ISP1763_REG_EP_INDEX);
+	udelay(1);
+}
+
+static void isp1763_udc_connect(struct isp1763_udc *udc)
+{
+	u32 tmp;
+
+	/* Enable device */
+	isp1763_writew(udc, ISP1763_ADDR_DEVEN, ISP1763_REG_ADDR);
+
+	tmp = ISP1763_OTG_CTRL_DP_PULLUP | ISP1763_OTG_CTRL_SW_SEL_HC_DC;
+	isp1763_writew(udc, tmp, ISP1763_REG_OTG_CTRL_SET);
+
+	tmp = ISP1763_OTG_CTRL_DP_PULLDOWN | ISP1763_OTG_CTRL_DM_PULLDOWN
+		| ISP1763_OTG_CTRL_VBUS_DRV;
+	isp1763_writew(udc, tmp, ISP1763_REG_OTG_CTRL_CLEAR);
+
+	/* Connect to the bus */
+	tmp = ISP1763_MODE_WKUPCS | ISP1763_MODE_CLKAON | ISP1763_MODE_GLINTENA;
+	isp1763_writew(udc, tmp, ISP1763_REG_MODE);
+
+	/* 1us pulse width */
+	isp1763_writew(udc, 0x1E, ISP1763_REG_INT_PULSE_WIDTH);
+
+	/* Set interrupt configuration register: interrupt on all ACK... */
+	tmp = ISP1763_INT_CONF_DDBGMODOUT_ALL_ACK
+		| ISP1763_INT_CONF_DDBGMODIN_ALL_ACK
+		| ISP1763_INT_CONF_CDBGMOD_ALL_ACK;
+	isp1763_writew(udc, tmp, ISP1763_REG_INT_CONF);
+
+	/* Enable default interrupts */
+	isp1763_writel(udc, ISP1763_DC_INT_EN_DEFAULT, ISP1763_REG_DC_INT_EN);
+
+	tmp = isp1763_readw(udc, ISP1763_REG_HW_MODE_CTRL);
+	tmp |= ISP1763_HW_MODE_CTRL_COMN_INT
+		| ISP1763_HW_MODE_CTRL_GLOBAL_INTR_EN
+		| ISP1763_HW_MODE_CTRL_ID_PULLUP;	/* disable sampling of ID line */
+	isp1763_writew(udc, tmp, ISP1763_REG_HW_MODE_CTRL);
 }
 
 static void __ep_disable(struct isp1763_ep *ep)
 {
 	struct isp1763_udc *udc = ep->udc;
-	unsigned int tmp;
+	u32 tmp;
 
 	/* disable interrupt for this endpoint (XXX: shall we do this here?) */
 	tmp = isp1763_readl(udc, ISP1763_REG_DC_INT_EN);
-	isp1763_writel(udc, tmp & ~(1 << (ep->index + 10)), ISP1763_REG_DC_INT_EN);
+	isp1763_writel(udc, tmp & ~(1 << (ep->num + ep->dir + 10)), ISP1763_REG_DC_INT_EN);
 
-	udc->ep_fifo_space += ep->maxpacketsize;
-	ep->maxpacketsize = 0;
+	udc->ep_fifo_space += ep->ep.maxpacket;
+	ep->ep.maxpacket = 0;
 
-	isp1763_udc_set_ep_index(udc, ep->index);
+	isp1763_udc_set_ep_index(udc, EP_INDEX(ep->num, ep->dir));
 	isp1763_writew(udc, 0, ISP1763_REG_EP_TYPE);
 }
 
@@ -116,7 +166,7 @@ static void isp1763_udc_stall_ep(struct isp1763_ep *ep, int do_stall)
 	struct isp1763_udc *udc = ep->udc;
 	u16 tmp;
 
-	isp1763_udc_set_ep_index(udc, ep->index);
+	isp1763_udc_set_ep_index(udc, EP_INDEX(ep->num, ep->dir));
 
 	tmp = isp1763_readw(udc, ISP1763_REG_CTRL_FUNC);
 	if (do_stall)
@@ -127,15 +177,24 @@ static void isp1763_udc_stall_ep(struct isp1763_ep *ep, int do_stall)
 	isp1763_writew(udc, tmp, ISP1763_REG_CTRL_FUNC);
 }
 
+static inline void isp1763_udc_zlp(struct isp1763_udc *udc)
+{
+	isp1763_writew(udc, 0, ISP1763_REG_BUF_LEN);
+	isp1763_udc_set_vendp(udc);
+}
+
 static void isp1763_udc_write_ep(struct isp1763_ep *ep,
-				 struct isp1763_request *req)
+				 struct isp1763_request *req, bool complete)
 {
 	struct isp1763_udc *udc = ep->udc;
 	unsigned int to_write, i;
 	u16 *buf;
 
-	if (req->req.actual == req->req.length)
+	if (req->req.actual == req->req.length) {
+		if (complete)
+			isp1763_udc_complete_req(ep, req, 0);
 		return;
+	}
 
 	to_write = req->req.length - req->req.actual;
 	if (to_write > ep->ep.maxpacket)
@@ -149,39 +208,44 @@ static void isp1763_udc_write_ep(struct isp1763_ep *ep,
 
 	if (to_write & 1) {
 		u8 *bufc = (u8 *) buf;
-		isp1763_writew(udc, (u16)(bufc[to_write - 1] | (bufc[to_write - 1] << 8)), ISP1763_REG_DATA_PORT);
+		u16 val = (u16)(bufc[to_write - 1] | (bufc[to_write - 1] << 8));
+		isp1763_writew(udc, val, ISP1763_REG_DATA_PORT);
 	}
 
 	req->req.actual += to_write;
-	if (req->req.actual == req->req.length)
+	if (complete && req->req.actual == req->req.length)
 		isp1763_udc_complete_req(ep, req, 0);
 
-	if (to_write> 0 && to_write < ep->maxpacketsize)
+	if (to_write > 0 && to_write < ep->ep.maxpacket)
 		isp1763_udc_set_vendp(udc);
 }
 
 static void isp1763_udc_read_ep(struct isp1763_ep *ep,
-				struct isp1763_request *req)
+				 struct isp1763_request *req, bool complete)
 {
 	struct isp1763_udc *udc = ep->udc;
 	unsigned int bufspace, buflen, i;
 	u16 *buf;
 	bool is_done = false;
 
+	isp1763_udc_set_ep_index(udc, EP_INDEX(ep->num, ep->dir));
+
 	/*
 	 * An RX interrupt without any data is caused by a icr setting where
 	 * an interrupt is generated on the first NAK after previously having an
 	 * ACK. This is it. Nothing to it, so just leave and do naught.
 	 */
-	if (isp1763_readw(udc, ISP1763_REG_DC_BUF_STATUS) == 0)
+	if (isp1763_readw(udc, ISP1763_REG_DC_BUF_STATUS) == 0) {
+		isp1763_udc_set_clbuf(udc);
 		return;
+	}
 
 	if (!req->req.buf) {
 		dev_err(udc->dev, "%s: request without a buffer\n", ep->name);
 		req->req.actual = 0;
 		if (!req->req.no_interrupt)
 			isp1763_udc_complete_req(ep, req, -EINVAL);
-		return;
+		return;;
 	}
 
 	if (req->req.actual == req->req.length)
@@ -200,7 +264,6 @@ static void isp1763_udc_read_ep(struct isp1763_ep *ep,
 		buflen = bufspace;
 	}
 
-	isp1763_udc_disable_glint(udc);     //TODO: where ist it enabled?
 	ndelay(500);
 
 	for (i = 0; i < (buflen / 2); i++)
@@ -211,17 +274,19 @@ static void isp1763_udc_read_ep(struct isp1763_ep *ep,
 		bufc[buflen - 1] = (u8) isp1763_readw(udc, ISP1763_REG_DATA_PORT) & 0xFF;
 	}
 
-	isp1763_udc_disable_glint(udc);     //TODO: where ist it enabled?
-
 	req->req.actual += buflen;
-	if (buflen < ep->maxpacketsize)
+	if (buflen < ep->ep.maxpacket)
 		is_done = true;
 	if (buflen == bufspace)
 		is_done = true;
 
-	if (is_done) {
-		isp1763_writew(udc, 0, ISP1763_REG_DC_BUF_STATUS);
-		isp1763_udc_set_clbuf(udc);
+	if (complete && is_done) {
+		if (ep == &udc->ep[0]) {
+			isp1763_udc_set_status(udc);
+		} else {
+			isp1763_writew(udc, 0, ISP1763_REG_DC_BUF_STATUS);
+			isp1763_udc_set_clbuf(udc);
+		}
 		isp1763_udc_complete_req(ep, req, 0);
 	}
 }
@@ -239,20 +304,41 @@ static int isp1763_udc_handle_ep_irq(struct isp1763_ep *ep)
 		return 0;
 	}
 
-	isp1763_udc_set_ep_index(udc, ep->index);
-
+	isp1763_udc_set_ep_index(udc, EP_INDEX(ep->num, ep->dir));
 	req = list_entry(ep->queue.next, struct isp1763_request, queue);
 
 	if (isp1763_ep_is_tx(ep)) {
-		dev_dbg(udc->dev, "write %s: actual = %u length = %u\n", ep->name,
+		bool complete = false;
+		unsigned int i;
+
+		dev_dbg(udc->dev, "write %s: actual = %u length = %u", ep->name,
 			req->req.actual, req->req.length);
 
-		isp1763_udc_write_ep(ep, req);
+#ifdef DEBUG
+		for (i = 0; i < req->req.length; i++)
+			pr_cont(" %02x", ((unsigned char *)req->req.buf)[i]);
+		pr_cont("\n");
+#endif
+
+		/*
+		 * Check if there is more data to write for previous packet,
+		 * otherwise send completion
+		 */
+
+		/* insert ZLP after 512 bytes */
+		if (req->req.actual == req->req.length) {
+			if (req->req.actual > 0 && req->req.actual % 512 == 0)
+				isp1763_udc_zlp(udc);
+
+			complete = true;
+		}
+
+		isp1763_udc_write_ep(ep, req, complete);
 	} else {
 		dev_dbg(udc->dev, "read %s: actual = %u length = %u\n", ep->name,
 			req->req.actual, req->req.length);
 
-		isp1763_udc_read_ep(ep, req);
+		isp1763_udc_read_ep(ep, req, true);
 	}
 
 	return 0;
@@ -274,7 +360,7 @@ static void isp1763_udc_handle_ep0setup(struct isp1763_udc *udc)
 
 	buflen = isp1763_readw(udc, ISP1763_REG_BUF_LEN);
 	if (buflen != sizeof(pkt)) {
-		dev_err(udc->dev, "Invalid size for USB control request: %04x\n", buflen);
+		dev_err(udc->dev, "Invalid size for USB control request: %d\n", buflen);
 		return;
 	}
 
@@ -298,48 +384,93 @@ static void isp1763_udc_handle_ep0setup(struct isp1763_udc *udc)
 	if ((pkt.r.bRequestType & USB_TYPE_MASK) != USB_TYPE_STANDARD)
 		goto non_standard;
 
-//TODO: where is data written to "pkt.r.bRequest"
+	udc->ep[0].dir = ISP1763_EP_INDEX_DIR_TX;
 
 	switch (pkt.r.bRequest) {
 	case USB_REQ_SET_ADDRESS:
+		dev_dbg(udc->dev, "USB_REQ_SET_ADDRESS: %04x\n", wValue);
 		isp1763_writew(udc, wValue | ISP1763_ADDR_DEVEN, ISP1763_REG_ADDR);
+		isp1763_udc_set_status(udc);
 		break;
 	case USB_REQ_SET_FEATURE:
 	case USB_REQ_CLEAR_FEATURE:
 		if (wValue == USB_ENDPOINT_HALT) {
-			struct isp1763_ep *ep = &udc->ep[WINDEX_TO_ISP1763_EP_INDEX(wIndex)];
+			struct isp1763_ep *ep = &udc->ep[WINDEX_TO_EP_INDEX(wIndex)];
 			isp1763_udc_stall_ep(ep, pkt.r.bRequest == USB_REQ_SET_FEATURE ? 1 : 0);
 		} else
 			isp1763_udc_set_status(udc);
 
 		break;
 	default:
-		if (udc->driver)
+		if (udc->driver) {
+			dev_dbg(udc->dev, "Setting up gadget driver\n");
 			status = udc->driver->setup(&udc->gadget, &pkt.r);
-		else
+		} else
 			status = -ENODEV;
 		if (status < 0) {
-stall:
 			dev_dbg(udc->dev, "req %02x.%02x protocol STALL; status %d\n",
 				pkt.r.bRequestType, pkt.r.bRequest, status);
 			isp1763_udc_stall_ep(&udc->ep[0], 1);
 		}
 
-		if (pkt.r.bRequestType & USB_DIR_IN) {
+		/* Device to host */
+		if (pkt.r.bRequest & USB_DIR_IN) {
 			if (list_empty(&udc->ep[0].queue)) {
-				isp1763_udc_set_ep_index(udc, 0 | ISP1763_EP_INDEX_DIR_TX);
+				isp1763_udc_set_ep_index(udc, EP_INDEX(0, ISP1763_EP_INDEX_DIR_TX));
 				isp1763_udc_set_dsen(udc);
-				isp1763_writew(udc, 0, ISP1763_REG_BUF_LEN);
-
+				isp1763_udc_zlp(udc);
 			}
+		} else if (pkt.r.bRequest == USB_REQ_SET_CONFIGURATION) {
+			isp1763_udc_set_ep_index(udc, EP_INDEX(0, ISP1763_EP_INDEX_DIR_TX));
+			isp1763_writew(udc, 0, ISP1763_REG_BUF_LEN);
+			isp1763_udc_set_status(udc);
 		}
 	}
 
 	return;
 
 non_standard:
-	dev_dbg(udc->dev, "EP0 class/vendor request\n");
+	if (pkt.r.bRequestType & USB_DIR_IN) {
+		dev_dbg(udc->dev, "EP0 CLASS IN REQUEST\n");
+		udc->ep[0].dir = ISP1763_EP_INDEX_DIR_TX;
+	} else {
+		unsigned int timeout = 0;
+		dev_dbg(udc->dev, "EP0 CLASS OUT REQUEST\n");
 
+		isp1763_udc_set_ep_index(udc, EP_INDEX(0, ISP1763_EP_INDEX_DIR_RX));
+		isp1763_udc_clear_dsen(udc);
+		isp1763_udc_set_dsen(udc);
+
+		while (!isp1763_readw(udc, ISP1763_REG_BUF_LEN)) {
+			udelay(10);
+			if (++timeout > 1000) {
+				dev_emerg(udc->dev, "TIMEOUT!\n");
+				break;
+			}
+			isp1763_udc_set_ep_index(udc, EP_INDEX(0, ISP1763_EP_INDEX_DIR_RX));
+		}
+
+		dev_dbg(udc->dev, "DcBufferStatus: %04x buflen: %d\n",
+				isp1763_readw(udc, ISP1763_REG_DC_BUF_STATUS),
+				isp1763_readw(udc, ISP1763_REG_BUF_LEN));
+		udc->ep[0].dir = ISP1763_EP_INDEX_DIR_RX;
+	}
+
+	if (udc->driver)
+		status = udc->driver->setup(&udc->gadget, &pkt.r);
+	else
+		status = -ENODEV;
+	if (status < 0) {
+		dev_dbg(udc->dev, "req %02x.%02x protocol STALL; status %d\n",
+			pkt.r.bRequestType, pkt.r.bRequest, status);
+		isp1763_udc_stall_ep(&udc->ep[0], 1);
+	}
+
+	if (!(pkt.r.bRequestType & USB_DIR_IN)) {
+		isp1763_udc_set_ep_index(udc, EP_INDEX(0, ISP1763_EP_INDEX_DIR_RX));
+		isp1763_udc_set_dsen(udc);
+		isp1763_udc_set_status(udc);
+	}
 }
 
 static int isp1763_udc_ep_enable(struct usb_ep *_ep,
@@ -348,8 +479,8 @@ static int isp1763_udc_ep_enable(struct usb_ep *_ep,
 	struct isp1763_ep *ep = container_of(_ep, struct isp1763_ep, ep);
 	struct isp1763_udc *udc = ep->udc;
 	unsigned long flags;
-	u16 fifo_size, tmp;
-	unsigned int i;
+	u16 fifo_size;
+	u32 tmp;
 
 	if (!desc)
 		return -EINVAL;
@@ -361,31 +492,34 @@ static int isp1763_udc_ep_enable(struct usb_ep *_ep,
 
 	spin_lock_irqsave(&udc->lock, flags);
 
-	dev_dbg(udc->dev, "ep_enable(%i): %s type %x maxsize %d\n", ep->index, ep->name,
+	dev_dbg(udc->dev, "ep_enable(%i): %s type %x maxsize %d\n", ep->num, ep->name,
 		usb_endpoint_type(desc), le16_to_cpu(desc->wMaxPacketSize));
 
-	isp1763_udc_set_ep_index(udc, ep->index);
+	dev_dbg(udc->dev, "Set EP index: %04x\n", EP_INDEX(ep->num, ep->dir));
+	isp1763_udc_set_ep_index(udc, EP_INDEX(ep->num, ep->dir));
+
+	isp1763_writew(udc, usb_endpoint_type(desc), ISP1763_REG_EP_TYPE);
 	isp1763_writew(udc, fifo_size, ISP1763_REG_EP_MAXPKTSIZE);
+
 	tmp = usb_endpoint_type(desc) | ISP1763_EP_TYPE_ENABLE | ISP1763_EP_TYPE_DBLBUF;
 	isp1763_writew(udc, tmp, ISP1763_REG_EP_TYPE);
 
 	/* clear buffer, twice for double buffering */
-	for (i = 0; i < 2; i++) {
-		/* set... */
-		tmp = isp1763_readw(udc, ISP1763_REG_CTRL_FUNC);
-		isp1763_writew(udc, tmp | ISP1763_CTRL_FUNC_CLBUF, ISP1763_REG_CTRL_FUNC);
-		/* ..and reset */
-		tmp = isp1763_readw(udc, ISP1763_REG_CTRL_FUNC);
-		isp1763_writew(udc, tmp & ~ISP1763_CTRL_FUNC_CLBUF, ISP1763_REG_CTRL_FUNC);
-	}
+	isp1763_udc_set_clbuf(udc);
+	isp1763_udc_clear_clbuf(udc);
+	isp1763_udc_set_clbuf(udc);
+	isp1763_udc_clear_clbuf(udc);
 
-	ep->maxpacketsize = fifo_size;
+	ep->ep.maxpacket = fifo_size;
 	udc->ep_fifo_space -= fifo_size;
 
-#if 0
 	/* enable interrupt for this endpoint (XXX: shall we do this here?) */
 	tmp = isp1763_readl(udc, ISP1763_REG_DC_INT_EN);
-	isp1763_writel(udc, tmp | (1 << (ep->index + 10)), ISP1763_REG_DC_INT_EN);
+#if 0
+	dev_dbg(udc->dev, "DcIntEnable: %08x\n", tmp);
+	isp1763_writel(udc, tmp | (1 << (ep->num + ep->dir + 10)), ISP1763_REG_DC_INT_EN);
+	tmp = isp1763_readl(udc, ISP1763_REG_DC_INT_EN);
+	dev_dbg(udc->dev, "DcIntEnable: %08x\n", tmp);
 #endif
 
 	spin_unlock_irqrestore(&udc->lock, flags);
@@ -398,6 +532,11 @@ static int isp1763_udc_ep_disable(struct usb_ep *_ep)
 	struct isp1763_ep *ep = container_of(_ep, struct isp1763_ep, ep);
 	struct isp1763_udc *udc = ep->udc;
 	unsigned long flags;
+
+	if (ep == &udc->ep[0]) {
+		dev_err(udc->dev, "Cannot disable EP0\n");
+		return -EINVAL;
+	}
 
 	spin_lock_irqsave(&udc->lock, flags);
 	__ep_disable(ep);
@@ -436,6 +575,7 @@ static int isp1763_udc_ep_queue(struct usb_ep *_ep, struct usb_request *_req,
 	struct isp1763_udc *udc;
 	struct isp1763_request *req;
 	unsigned long flags;
+	int ret;
 
 	if (!_ep || !_req || !_req->complete || !_req->buf)
 		return -EINVAL;
@@ -447,7 +587,16 @@ static int isp1763_udc_ep_queue(struct usb_ep *_ep, struct usb_request *_req,
 	if (!udc || !udc->driver || udc->gadget.speed == USB_SPEED_UNKNOWN)
 		return -EINVAL;
 
-	dev_dbg(udc->dev, "ep_queue(%s): %d bytes\n", ep->name, _req->length);
+	dev_dbg(udc->dev, "ep_queue(%s): %d bytes:", ep->name, _req->length);
+
+#ifdef DEBUG
+	if (ep != &udc->ep[0]) {
+		unsigned int i;
+		for (i = 0; i < _req->length; i++)
+			pr_cont(" %02x", ((unsigned char *) (_req->buf))[i]);
+	}
+	pr_cont("\n");
+#endif
 
 	_req->status = -EINPROGRESS;
 	_req->actual = 0;
@@ -456,19 +605,64 @@ static int isp1763_udc_ep_queue(struct usb_ep *_ep, struct usb_request *_req,
 
 	list_add_tail(&req->queue, &ep->queue);
 
-	if (ep->ep.name == ep0name) {
-	} else {
-		/* normal data transfer */
+	/* Control transfer */
+	if (ep == &udc->ep[0]) {
+		dev_dbg(udc->dev, "queueing on EP0%s\n", isp1763_ep_is_tx(ep) ? "TX" : "RX");
+		if (isp1763_ep_is_tx(ep)) {
+			isp1763_udc_set_ep_index(udc, EP_INDEX(0, ISP1763_EP_INDEX_DIR_TX));
+			isp1763_udc_set_dsen(udc);
 
-		if (isp1763_ep_is_tx(ep))
-			isp1763_udc_write_ep(ep, req);
-		else
-			isp1763_udc_read_ep(ep, req);
+			isp1763_udc_write_ep(ep, req, false);
+			if (req->req.actual <= 64)
+				isp1763_udc_set_vendp(udc);
+		} else {
+			unsigned int i;
+
+			dev_dbg(udc->dev, "EP0RX transfer\n");
+
+			mdelay(1);
+			memset(_req->buf, 0, _req->length);
+
+more:
+			for (i = 0; i < 150; i++) {
+				isp1763_udc_set_ep_index(udc, EP_INDEX(0, ISP1763_EP_INDEX_DIR_RX));
+				if (isp1763_readw(udc, ISP1763_REG_BUF_LEN))
+					break;
+			}
+
+			if (isp1763_readw(udc, ISP1763_REG_BUF_LEN) == 0) {
+				dev_err(udc->dev, "EP0RX: No data present\n");
+				ret = -EAGAIN;
+				goto out;
+			}
+
+			isp1763_udc_read_ep(ep, req, true);
+			if (req->req.status != 0)
+				goto more;
+		}
+
+	} else {	/* normal data transfer */
+		dev_dbg(udc->dev, "Normal data transfer\n");
+
+		/* IN transfer */
+		if (isp1763_ep_is_tx(ep)) {
+			if (isp1763_readw(udc, ISP1763_REG_BUF_LEN == 0) &&
+			    !list_empty(&ep->queue)) {
+				isp1763_udc_set_ep_index(udc, EP_INDEX(ep->num, ep->dir));
+				isp1763_udc_write_ep(ep, req, false);
+#if 0
+				if (req->req.actual == req->req.length)
+					isp1763_udc_set_vendp(udc);
+#endif
+			}
+		}
+
 	}
 
+	ret = 0;
+out:
 	spin_unlock_irqrestore(&udc->lock, flags);
-
-	return 0;
+	return ret;
 }
 
 static int isp1763_udc_ep_dequeue(struct usb_ep *_ep, struct usb_request *_req)
@@ -478,11 +672,14 @@ static int isp1763_udc_ep_dequeue(struct usb_ep *_ep, struct usb_request *_req)
 	struct isp1763_udc *udc;
 	unsigned long flags;
 
-	if (!_ep || _ep->name == ep0name)
+	if (!_ep)
 		return -EINVAL;
 
 	ep = container_of(_ep, struct isp1763_ep, ep);
 	udc = ep->udc;
+
+	if (ep == &udc->ep[0])
+		return -EINVAL;
 
 	spin_lock_irqsave(&udc->lock, flags);
 
@@ -551,15 +748,13 @@ static void isp1763_udc_configure_ep0(struct isp1763_udc *udc)
 {
 	unsigned int i;
 
-	pr_debug("-> entering %s\n", __func__);
-
 	for (i = 0; i < 2; i++) {
 		/* setup EP0 out */
-		isp1763_udc_set_ep_index(udc, ISP1763_EP0_INDEX(ISP1763_EP_INDEX_DIR_RX));
+		isp1763_udc_set_ep_index(udc, EP_INDEX(0, ISP1763_EP_INDEX_DIR_RX));
 		isp1763_writew(udc, 64, ISP1763_REG_EP_MAXPKTSIZE);
 		isp1763_writew(udc, i << 3, ISP1763_REG_EP_TYPE);
 		/* setup EP0 in */
-		isp1763_udc_set_ep_index(udc, ISP1763_EP0_INDEX(ISP1763_EP_INDEX_DIR_TX));
+		isp1763_udc_set_ep_index(udc, EP_INDEX(0, ISP1763_EP_INDEX_DIR_TX));
 		isp1763_writew(udc, 64, ISP1763_REG_EP_MAXPKTSIZE);
 		isp1763_writew(udc, i << 3, ISP1763_REG_EP_TYPE);
 		/* setup EP0SETUP */
@@ -567,8 +762,6 @@ static void isp1763_udc_configure_ep0(struct isp1763_udc *udc)
 		isp1763_writew(udc, 64, ISP1763_REG_EP_MAXPKTSIZE);
 		isp1763_writew(udc, i << 3, ISP1763_REG_EP_TYPE);
 	}
-
-	pr_debug("<- leaving %s\n", __func__);
 }
 
 int usb_gadget_probe_driver(struct usb_gadget_driver *driver,
@@ -576,8 +769,6 @@ int usb_gadget_probe_driver(struct usb_gadget_driver *driver,
 {
 	struct isp1763_udc *udc = controller;
 	int ret;
-
-	pr_debug("-> entering %s\n", __func__);
 
 	if (!udc || !driver || !bind || !driver->unbind || !driver->setup)
 		return -EINVAL;
@@ -587,7 +778,6 @@ int usb_gadget_probe_driver(struct usb_gadget_driver *driver,
 
 	udc->driver = driver;
 
-	pr_debug(" calling bind\n");
 	ret = bind(&udc->gadget);
 	if (ret) {
 		dev_err(udc->dev, "Failed to bind gadget\n");
@@ -598,8 +788,6 @@ int usb_gadget_probe_driver(struct usb_gadget_driver *driver,
 	isp1763_udc_configure_ep0(udc);
 
 	dev_dbg(udc->dev, "bound to %s\n", driver->driver.name);
-
-	pr_debug("<- leaving %s\n", __func__);
 
 	return 0;
 }
@@ -626,12 +814,6 @@ static irqreturn_t isp1763_udc_irq(int irq, void *data)
 	struct isp1763_udc *udc = data;
 	unsigned long flags;
 	u32 irqs, irqs_en;
-    int tmp;
-	u16 hwmode = ISP1763_HW_MODE_CTRL_COMN_INT
-			| ISP1763_HW_MODE_CTRL_GLOBAL_INTR_EN
-			| ISP1763_HW_MODE_CTRL_ID_PULLUP;	/* disable sampling of ID line */
-
-	dev_info(udc->dev, "-> IRQ\n");
 
 	spin_lock_irqsave(&udc->lock, flags);
 
@@ -640,14 +822,12 @@ static irqreturn_t isp1763_udc_irq(int irq, void *data)
 
 	isp1763_udc_disable_glint(udc);
 
-  	irqs = isp1763_readl(udc, ISP1763_REG_DC_INT);
+	irqs = isp1763_readl(udc, ISP1763_REG_DC_INT);
+	isp1763_writel(udc, irqs, ISP1763_REG_DC_INT);
 
 	/* Only consider interrupt for enabled endpoints */
 	irqs_en = isp1763_readl(udc, ISP1763_REG_DC_INT_EN);
-
 	irqs &= irqs_en;
-
-	dev_dbg(udc->dev, "DcInterrupt: %08x\n", irqs);
 
 	if (!irqs)
 		goto out;
@@ -655,31 +835,33 @@ static irqreturn_t isp1763_udc_irq(int irq, void *data)
 	if (irqs & ISP1763_DC_INT_VBUS) {
 		u16 mode = isp1763_readw(udc, ISP1763_REG_MODE);
 
-		dev_info(udc->dev, "VBUS\n");
+		dev_dbg(udc->dev, "VBUS\n");
 
-        tmp = ISP1763_OTG_CTRL_DP_PULLUP;
+		if (mode & ISP1763_MODE_VBUSSTAT) {
+			u16 tmp = isp1763_readw(udc, ISP1763_REG_OTG_CTRL_SET);
+			tmp |= ISP1763_OTG_CTRL_DP_PULLUP;
+			isp1763_writew(udc, tmp, ISP1763_REG_OTG_CTRL_SET);
+		} else
+			isp1763_writew(udc, ISP1763_OTG_CTRL_DP_PULLUP, ISP1763_REG_OTG_CTRL_CLEAR);
 
-		if (mode & ISP1763_MODE_VBUSSTAT)
-            isp1763_writel(udc, tmp, ISP1763_REG_OTG_CTRL_SET);
-		else
-		    isp1763_writel(udc, tmp, ISP1763_REG_OTG_CTRL_CLR);
 	}
 
 	/* EP0 setup */
 	if (irqs & ISP1763_DC_INT_EP0SETUP) {
-		dev_info(udc->dev, "EP0SETUP\n");
+		dev_dbg(udc->dev, "EP0SETUP\n");
 
 		isp1763_udc_handle_ep0setup(udc);
 	}
 
-	/* EP0 RX */
+	/* EP0 RX: Control Out */
 	if (irqs & ISP1763_DC_INT_EP0RX) {
 		struct isp1763_request *req;
 		struct isp1763_ep *ep0 = &udc->ep[0];
 
-		dev_info(udc->dev, "EP0RX\n");
+		dev_dbg(udc->dev, "EP0RX\n");
 
-		isp1763_udc_set_ep_index(udc, ISP1763_EP0_INDEX(ISP1763_EP_INDEX_DIR_RX));
+		isp1763_udc_set_ep_index(udc, EP_INDEX(0, ISP1763_EP_INDEX_DIR_RX));
+
 		if (isp1763_readw(udc, ISP1763_REG_BUF_LEN) == 0) {
 			isp1763_udc_set_status(udc);
 			goto ep0rx_out;
@@ -692,107 +874,63 @@ static irqreturn_t isp1763_udc_irq(int irq, void *data)
 
 		req = list_entry(ep0->queue.next, struct isp1763_request, queue);
 
-		isp1763_udc_read_ep(ep0, req);
+		dev_dbg(udc->dev, "EP0TX: request len=%d, written=%d\n",
+				req->req.length, req->req.actual);
+
+		isp1763_udc_read_ep(ep0, req, false);
 		isp1763_udc_set_status(udc);
+		list_del_init(&req->queue);
 	}
 ep0rx_out:
 
-	/* EP0 TX */
+	/* EP0 TX: Control In */
 	if (irqs & ISP1763_DC_INT_EP0TX) {
+		struct isp1763_ep *ep = &udc->ep[0];
 		struct isp1763_request *req;
-		struct isp1763_ep *ep0 = &udc->ep[0];
 
-		dev_info(udc->dev, "EP0TX\n");
+		dev_dbg(udc->dev, "EP0TX\n");
 
-		isp1763_udc_set_ep_index(udc, ISP1763_EP0_INDEX(ISP1763_EP_INDEX_DIR_TX));
+		if (ep->dir != ISP1763_EP_INDEX_DIR_TX)
+			goto ep0tx_out;
 
-		if (list_empty(&ep0->queue)) {
+		if (list_empty(&ep->queue)) {
 			dev_dbg(udc->dev, "EP0TX: queue empty\n");
 			goto ep0tx_out;
 		}
 
-		req = list_entry(ep0->queue.next, struct isp1763_request, queue);
+		req = list_entry(ep->queue.next, struct isp1763_request, queue);
 
 		dev_dbg(udc->dev, "EP0TX: request len=%d, written=%d\n",
 				req->req.length, req->req.actual);
 
-		isp1763_udc_write_ep(ep0, req);
-
+		isp1763_udc_set_ep_index(udc, EP_INDEX(0, ISP1763_EP_INDEX_DIR_TX));
 		if (req->req.actual < req->req.length) {
 			dev_dbg(udc->dev, "EP0TX: request not complete\n");
 
-
-		} else {
+			isp1763_udc_write_ep(ep, req, false);
+		}
+		if (req->req.actual == req->req.length) {
 			dev_dbg(udc->dev, "EP0TX: request complete\n");
-			isp1763_udc_set_ep_index(udc, ISP1763_EP0_INDEX(ISP1763_EP_INDEX_DIR_RX));
+			isp1763_udc_set_ep_index(udc, EP_INDEX(0, ISP1763_EP_INDEX_DIR_RX));
 			isp1763_udc_set_status(udc);
+			isp1763_udc_complete_req(ep, req, 0);
 		}
 	}
 ep0tx_out:
 
 	if (irqs & ISP1763_DC_INT_BRESET) {
-		unsigned int i;
+		dev_dbg(udc->dev, "BRESET\n");
 
-		dev_info(udc->dev, "BRESET\n");
-		udc->gadget.speed = USB_SPEED_FULL;
-		for (i = 1; i < ISP1763_UDC_MAX_ENDPOINTS; i++)
-			__ep_disable(&udc->ep[i]);
-
-
-	    /* Select bus width and interrupt polarity (XXX: hardcoded for now) */
-	    hwmode &= ~ISP1763_HW_MODE_CTRL_DATA_BUS_WIDTH;
-	    hwmode &= ~ISP1763_HW_MODE_CTRL_INTR_POL;
-	    hwmode &= ~ISP1763_HW_MODE_CTRL_INTR_LEVEL;
-	    isp1763_writew(udc, hwmode, ISP1763_REG_HW_MODE_CTRL);          // programming guide: 1
-
-	    /* Lock interface mode */
-	    tmp = isp1763_readw(udc, ISP1763_REG_HW_MODE_CTRL);
-	    tmp |= ISP1763_HW_MODE_CTRL_INTF_LOCK;
-	    isp1763_writew(udc, tmp, ISP1763_REG_HW_MODE_CTRL);             // programming guide: 2
-
-	    /* Enable device mode */
-	    tmp = 0;
-	    tmp |= ISP1763_OTG_CTRL_SW_SEL_HC_DC | ISP1763_OTG_CTRL_DP_PULLUP;
-        tmp |= ISP1763_OTG_CTRL_OTG_DISABLE;
-        isp1763_writew(udc, tmp, ISP1763_REG_OTG_CTRL_SET);
-
-        tmp = 0;
-	    tmp |= ISP1763_OTG_CTRL_DM_PULLDOWN | ISP1763_OTG_CTRL_DP_PULLDOWN;
-	    isp1763_writew(udc, tmp, ISP1763_REG_OTG_CTRL_CLR);                             // programming guide: 3
-
-    //TODO: configure endpoints
-
-	    /* Enable device */
-	    isp1763_writew(udc, ISP1763_ADDR_DEVEN, ISP1763_REG_ADDR);                      // programming guide: 5
-	    
-
-	    /* Set mode register */
-	    tmp = ISP1763_MODE_GLINTENA | ISP1763_MODE_WKUPCS | ISP1763_MODE_CLKAON | ISP1763_MODE_DMACLKON;
-	    isp1763_writew(udc, tmp, ISP1763_REG_MODE);                                     // programming guide: 6
-
-	    /* Set interrupt configuration register: interrupt on all ACK... */
-	    tmp = ISP1763_INT_CONF_DDBGMODOUT_ALL_ACK
-		    | ISP1763_INT_CONF_DDBGMODIN_ALL_ACK
-		    | ISP1763_INT_CONF_CDBGMOD_ALL_ACK;
-	    /* ...interrupt level */
-	    tmp &= ISP1763_INT_CONF_INTPOL;
-	    tmp &= ~ISP1763_INT_CONF_INTLVL;
-	    isp1763_writew(udc, tmp, ISP1763_REG_INT_CONF);                                 // programming guide: 7
-
-	    /*
-	     * Enable required interrupts (note: endpoint interrupts for endpoints
-	     * != EP0 will only get enabled if the respective endpoint is enabled by
-	     * the gadget subsystem)
-	     */
-	    isp1763_writel(udc, 0x03FFFDF9, ISP1763_REG_DC_INT_EN);                         // programming guide: 8
-
-    }
-
+		isp1763_writel(udc, 0, ISP1763_REG_DC_INT);
+		isp1763_udc_connect(udc);
+		isp1763_writel(udc, ISP1763_DC_INT_EP_ANY | ISP1763_DC_INT_EN_DEFAULT, ISP1763_REG_DC_INT_EN);
+	}
 
 	/* EP interrupts */
 	if (irqs & ISP1763_DC_INT_EP_ANY) {
 		unsigned int i;
-		/* EP0 is special and not handeled here */
+		dev_dbg(udc->dev, "EP IRQ: %08x\n", irqs & ISP1763_DC_INT_EP_ANY);
+		/* EP0 is special and not handled here */
 		for (i = 1; i < ISP1763_UDC_MAX_ENDPOINTS; i++) {
 			if (irqs & (1 << (11 + i))) {
 				if (isp1763_udc_handle_ep_irq(&udc->ep[i]))
@@ -801,29 +939,22 @@ ep0tx_out:
 		}
 	}
 
-    // reset only activated interrupts
-	isp1763_writel(udc, irqs, ISP1763_REG_DC_INT);
-
 out:
-    isp1763_udc_enable_glint(udc);
-
+	isp1763_udc_enable_glint(udc);
 	spin_unlock_irqrestore(&udc->lock, flags);
-
 	return IRQ_HANDLED;
 }
 
 static int isp1763_udc_init_hw(struct isp1763_udc *udc)
 {
-	u16 hwmode = ISP1763_HW_MODE_CTRL_COMN_INT
-			| ISP1763_HW_MODE_CTRL_GLOBAL_INTR_EN
-			| ISP1763_HW_MODE_CTRL_ID_PULLUP;	/* disable sampling of ID line */
 	u32 chip_id;
 	u16 tmp;
 	int ret;
-    int i;
-    int fifo_size;
 
 	pr_debug("-> entering %s\n", __func__);
+
+	/* Unlock the controller */
+	isp1763_writew(udc, ISP1763_UNLOCK_CODE, ISP1763_REG_UNLOCK);
 
 	/* Dummy reads to stabilize controller access */
 	mdelay(10);
@@ -840,36 +971,31 @@ static int isp1763_udc_init_hw(struct isp1763_udc *udc)
 		return -EIO;
 	}
 
+#if 0
 	/* Select bus width and interrupt polarity (XXX: hardcoded for now) */
 	hwmode &= ~ISP1763_HW_MODE_CTRL_DATA_BUS_WIDTH;
 	hwmode &= ~ISP1763_HW_MODE_CTRL_INTR_POL;
 	hwmode &= ~ISP1763_HW_MODE_CTRL_INTR_LEVEL;
-	isp1763_writew(udc, hwmode, ISP1763_REG_HW_MODE_CTRL);          // programming guide: 1
+	isp1763_writew(udc, hwmode, ISP1763_REG_HW_MODE_CTRL);
 
 	/* Lock interface mode */
 	tmp = isp1763_readw(udc, ISP1763_REG_HW_MODE_CTRL);
 	tmp |= ISP1763_HW_MODE_CTRL_INTF_LOCK;
-	isp1763_writew(udc, tmp, ISP1763_REG_HW_MODE_CTRL);             // programming guide: 2
-
-	/* Unlock the controller */
-	isp1763_writew(udc, ISP1763_UNLOCK_CODE, ISP1763_REG_UNLOCK);   // programming guide: 3
-
-	/* Soft reset */
-	tmp = isp1763_readw(udc, ISP1763_REG_SWRESET);
-	tmp |= ISP1763_SWRESET_RESET_ALL | ISP1763_SWRESET_RESET_ATX;
-	isp1763_writew(udc, tmp, ISP1763_REG_SWRESET);
-
-	tmp = isp1763_readw(udc, ISP1763_REG_MODE);
-	tmp |= ISP1763_MODE_SFRESET;
-	isp1763_writew(udc, tmp, ISP1763_REG_MODE);
-
-	udelay(50);
-	tmp &= ~ISP1763_MODE_SFRESET;
-	isp1763_writew(udc, tmp, ISP1763_REG_MODE);                     // programming guide: 4
-	mdelay(1);
+	isp1763_writew(udc, tmp, ISP1763_REG_HW_MODE_CTRL);
 
 	/* Unlock the controller */
 	isp1763_writew(udc, ISP1763_UNLOCK_CODE, ISP1763_REG_UNLOCK);
+#endif
+	/* Soft reset */
+#if 0
+	tmp = isp1763_readw(udc, ISP1763_REG_SWRESET);
+	tmp |= ISP1763_SWRESET_RESET_ALL | ISP1763_SWRESET_RESET_ATX;
+	isp1763_writew(udc, tmp, ISP1763_REG_SWRESET);
+#endif
+	isp1763_writew(udc, ISP1763_MODE_SFRESET, ISP1763_REG_MODE);
+	mdelay(1);
+	isp1763_writew(udc, 0, ISP1763_REG_MODE);
+	mdelay(5);
 
 	/* Check the chip ID, again */
 	chip_id = isp1763_readl(udc, ISP1763_REG_CHIP_ID);
@@ -896,6 +1022,7 @@ static int isp1763_udc_init_hw(struct isp1763_udc *udc)
 	if (ret)
 		return ret;
 
+#if 0
 	isp1763_writew(udc, hwmode, ISP1763_REG_HW_MODE_CTRL);
 
 	/* Set interrupt level */
@@ -903,148 +1030,31 @@ static int isp1763_udc_init_hw(struct isp1763_udc *udc)
 	tmp &= ~ISP1763_HW_MODE_CTRL_INTR_POL;
 	tmp &= ~ISP1763_HW_MODE_CTRL_INTR_LEVEL;
 	isp1763_writew(udc, tmp, ISP1763_REG_HW_MODE_CTRL);
-
+#endif
 	/* Enable device mode */
-	tmp = 0;
-	tmp |= ISP1763_OTG_CTRL_SW_SEL_HC_DC | ISP1763_OTG_CTRL_DP_PULLUP;
-    tmp |= ISP1763_OTG_CTRL_OTG_DISABLE;
-    isp1763_writew(udc, tmp, ISP1763_REG_OTG_CTRL_SET);
-
-    tmp = 0;
+	isp1763_writew(udc, 0xFFFF, ISP1763_REG_OTG_CTRL_CLEAR);
+	tmp = isp1763_readw(udc, ISP1763_REG_OTG_CTRL_SET);
 	tmp |= ISP1763_OTG_CTRL_DM_PULLDOWN | ISP1763_OTG_CTRL_DP_PULLDOWN;
-	isp1763_writew(udc, tmp, ISP1763_REG_OTG_CTRL_CLR);                             // programming guide: 5
+	isp1763_writew(udc, tmp, ISP1763_REG_OTG_CTRL_SET);
+	/* disable OTG */
+	tmp |= ISP1763_OTG_CTRL_OTG_DISABLE;
+	isp1763_writew(udc, tmp, ISP1763_REG_OTG_CTRL_SET);
+	tmp |= ISP1763_OTG_CTRL_SW_SEL_HC_DC;
+	isp1763_writew(udc, tmp, ISP1763_REG_OTG_CTRL_SET);
 
-    // configure device endpoints TODO: do this correctly
-    fifo_size = 0x400;
-
-    //setup
-	isp1763_writew(udc, 0x20, ISP1763_REG_EP_INDEX);
-	ndelay(400);
-    isp1763_writew(udc, 0x00, ISP1763_REG_EP_TYPE);
-    isp1763_writew(udc, fifo_size, ISP1763_REG_EP_MAXPKTSIZE);
-
-    //control out
-	isp1763_writew(udc, 0x00, ISP1763_REG_EP_INDEX);
-	ndelay(400);
-    isp1763_writew(udc, 0x00, ISP1763_REG_EP_TYPE);
-    isp1763_writew(udc, fifo_size, ISP1763_REG_EP_MAXPKTSIZE);
-
-    //control in
-	isp1763_writew(udc, 0x01, ISP1763_REG_EP_INDEX);
-	ndelay(400);
-    isp1763_writew(udc, 0x00, ISP1763_REG_EP_TYPE);
-    isp1763_writew(udc, fifo_size, ISP1763_REG_EP_MAXPKTSIZE);
-
-    //data out 1
-	isp1763_writew(udc, 0x02, ISP1763_REG_EP_INDEX);
-	ndelay(400);
-    isp1763_writew(udc, 0x00, ISP1763_REG_EP_TYPE);
-    isp1763_writew(udc, fifo_size, ISP1763_REG_EP_MAXPKTSIZE);
-
-    //data in 1
-	isp1763_writew(udc, 0x03, ISP1763_REG_EP_INDEX);
-	ndelay(400);
-    isp1763_writew(udc, 0x00, ISP1763_REG_EP_TYPE);
-    isp1763_writew(udc, fifo_size, ISP1763_REG_EP_MAXPKTSIZE);
-
-    //data out 2
-	isp1763_writew(udc, 0x04, ISP1763_REG_EP_INDEX);
-	ndelay(400);
-    isp1763_writew(udc, 0x00, ISP1763_REG_EP_TYPE);
-    isp1763_writew(udc, fifo_size, ISP1763_REG_EP_MAXPKTSIZE);
-
-    //data in 2
-	isp1763_writew(udc, 0x05, ISP1763_REG_EP_INDEX);
-	ndelay(400);
-    isp1763_writew(udc, 0x00, ISP1763_REG_EP_TYPE);
-    isp1763_writew(udc, fifo_size, ISP1763_REG_EP_MAXPKTSIZE);
-
-    //data out 3
-	isp1763_writew(udc, 0x06, ISP1763_REG_EP_INDEX);
-	ndelay(400);
-    isp1763_writew(udc, 0x00, ISP1763_REG_EP_TYPE);
-    isp1763_writew(udc, fifo_size, ISP1763_REG_EP_MAXPKTSIZE);
-
-    //data in 3
-	isp1763_writew(udc, 0x07, ISP1763_REG_EP_INDEX);
-	ndelay(400);
-    isp1763_writew(udc, 0x00, ISP1763_REG_EP_TYPE);
-    isp1763_writew(udc, fifo_size, ISP1763_REG_EP_MAXPKTSIZE);
-
-    //data out 4
-	isp1763_writew(udc, 0x08, ISP1763_REG_EP_INDEX);
-	ndelay(400);
-    isp1763_writew(udc, 0x00, ISP1763_REG_EP_TYPE);
-    isp1763_writew(udc, fifo_size, ISP1763_REG_EP_MAXPKTSIZE);
-
-    //data in 4
-	isp1763_writew(udc, 0x09, ISP1763_REG_EP_INDEX);
-	ndelay(400);
-    isp1763_writew(udc, 0x00, ISP1763_REG_EP_TYPE);
-    isp1763_writew(udc, fifo_size, ISP1763_REG_EP_MAXPKTSIZE);
-
-    //data out 5
-	isp1763_writew(udc, 0x0A, ISP1763_REG_EP_INDEX);
-	ndelay(400);
-    isp1763_writew(udc, 0x00, ISP1763_REG_EP_TYPE);
-    isp1763_writew(udc, fifo_size, ISP1763_REG_EP_MAXPKTSIZE);
-
-    //data in 5
-	isp1763_writew(udc, 0x0B, ISP1763_REG_EP_INDEX);
-	ndelay(400);
-    isp1763_writew(udc, 0x00, ISP1763_REG_EP_TYPE);
-    isp1763_writew(udc, fifo_size, ISP1763_REG_EP_MAXPKTSIZE);
-
-    //data out 6
-	isp1763_writew(udc, 0x0C, ISP1763_REG_EP_INDEX);
-	ndelay(400);
-    isp1763_writew(udc, 0x00, ISP1763_REG_EP_TYPE);
-    isp1763_writew(udc, fifo_size, ISP1763_REG_EP_MAXPKTSIZE);
-
-    //data in 6
-	isp1763_writew(udc, 0x0D, ISP1763_REG_EP_INDEX);
-	ndelay(400);
-    isp1763_writew(udc, 0x00, ISP1763_REG_EP_TYPE);
-    isp1763_writew(udc, fifo_size, ISP1763_REG_EP_MAXPKTSIZE);
-
-    //data out 7
-	isp1763_writew(udc, 0x0E, ISP1763_REG_EP_INDEX);
-	ndelay(400);
-    isp1763_writew(udc, 0x00, ISP1763_REG_EP_TYPE);
-    isp1763_writew(udc, fifo_size, ISP1763_REG_EP_MAXPKTSIZE);
-
-    //data in 7
-	isp1763_writew(udc, 0x0F, ISP1763_REG_EP_INDEX);
-	ndelay(400);
-    isp1763_writew(udc, 0x00, ISP1763_REG_EP_TYPE);
-    isp1763_writew(udc, fifo_size, ISP1763_REG_EP_MAXPKTSIZE);                      // programming guide: 6
-
-	/* Enable device */
-	isp1763_writew(udc, ISP1763_ADDR_DEVEN, ISP1763_REG_ADDR);                      // programming guide: 7
-
-    /* Clear interrupts before enable them*/
-    tmp = isp1763_readl(udc, ISP1763_REG_DC_INT);
-    isp1763_writel(udc, tmp, ISP1763_REG_DC_INT);
+	mdelay(1);
 
 	/* Set mode register */
-	tmp = ISP1763_MODE_GLINTENA | ISP1763_MODE_WKUPCS | ISP1763_MODE_CLKAON | ISP1763_MODE_DMACLKON;
-	isp1763_writew(udc, tmp, ISP1763_REG_MODE);                                     // programming guide: 8
+	tmp = ISP1763_MODE_GLINTENA | ISP1763_MODE_WKUPCS;
+	isp1763_writew(udc, tmp, ISP1763_REG_MODE);
 
-	/* Set interrupt configuration register: interrupt on all ACK... */
-	tmp = ISP1763_INT_CONF_DDBGMODOUT_ALL_ACK
-		| ISP1763_INT_CONF_DDBGMODIN_ALL_ACK
-		| ISP1763_INT_CONF_CDBGMOD_ALL_ACK;
-	/* ...interrupt level */
-	tmp &= ISP1763_INT_CONF_INTPOL;
-	tmp &= ~ISP1763_INT_CONF_INTLVL;
-	isp1763_writew(udc, tmp, ISP1763_REG_INT_CONF);                                 // programming guide: 9
+	tmp = isp1763_readw(udc, ISP1763_REG_HW_MODE_CTRL);
+	tmp |= ISP1763_HW_MODE_CTRL_GLOBAL_INTR_EN | ISP1763_HW_MODE_CTRL_INTF_LOCK | ISP1763_HW_MODE_CTRL_COMN_INT;
+	isp1763_writew(udc, tmp, ISP1763_REG_HW_MODE_CTRL);
 
-	/*
-	 * Enable required interrupts (note: endpoint interrupts for endpoints
-	 * != EP0 will only get enabled if the respective endpoint is enabled by
-	 * the gadget subsystem)
-	 */
-	isp1763_writel(udc, 0x03FFFDF9, ISP1763_REG_DC_INT_EN);                         // programming guide: 10
+	/* "Connect" the chip */
+	isp1763_udc_connect(udc);
+
 	pr_debug("<- leaving %s\n", __func__);
 
 	return 0;
@@ -1054,8 +1064,6 @@ static void isp1763_udc_setup_device(struct isp1763_udc *udc)
 {
 	unsigned int i;
 
-	pr_debug("-> entering %s\n", __func__);
-
 	spin_lock_init(&udc->lock);
 
 	udc->gadget.ops = &isp1763_udc_gadget_ops;
@@ -1064,8 +1072,6 @@ static void isp1763_udc_setup_device(struct isp1763_udc *udc)
 	INIT_LIST_HEAD(&udc->gadget.ep_list);
 	udc->gadget.speed = USB_SPEED_HIGH;
 	udc->gadget.name = "isp1763_udc";
-
-	snprintf(udc->ep[0].name, 8, ep0name);
 
 	/*
 	 * Total EP FIFO size, excluding set-up token buffer, control IN and
@@ -1079,28 +1085,29 @@ static void isp1763_udc_setup_device(struct isp1763_udc *udc)
 
 		/* ep0 is special */
 		if (i == 0) {
-			snprintf(ep->name, 8, ep0name);
 			ep->ep.maxpacket = 64;
+			snprintf(ep->name, 8, ep0name);
+			ep->dir = 255;
 		} else {
 			snprintf(ep->name, 8, "ep%i%s",
-				 (i >> 1) + 1,
-				 (i & 1) ? "in" : "out");
+				 (i + 1) >> 1,
+				 ((i + 1) & 1) ? "in" : "out");
 			ep->ep.maxpacket = 4096;
+			ep->dir = ((i + 1) & 1) ?
+				ISP1763_EP_INDEX_DIR_TX : ISP1763_EP_INDEX_DIR_RX;
 		}
 
 		ep->ep.name = ep->name;
+		dev_dbg(udc->dev, "%d: ep->name = %s\n", i, ep->name);
 		ep->ep.ops = &isp1763_udc_ep_ops;
 
 		INIT_LIST_HEAD(&ep->queue);
 		ep->udc = udc;
-		ep->index = i;
-		ep->maxpacketsize = ep->ep.maxpacket;
+		ep->num = (i + 1) >> 1;
 
 		if (i != 0)
 			list_add_tail(&ep->ep.ep_list, &udc->gadget.ep_list);
 	}
-
-	pr_debug("<- leaving %s\n", __func__);
 }
 
 static int isp1763_udc_probe(struct platform_device *pdev)
@@ -1108,8 +1115,6 @@ static int isp1763_udc_probe(struct platform_device *pdev)
 	struct isp1763_udc *udc;
 	struct resource *res;
 	int ret = 0;
-
-	pr_debug("-> entering %s\n", __func__);
 
 	/* only allow one instance */
 	if (controller)
@@ -1129,12 +1134,11 @@ static int isp1763_udc_probe(struct platform_device *pdev)
 
 	if (!devm_request_mem_region(&pdev->dev, res->start, resource_size(res),
 			"isp1763")) {
-		dev_err(&pdev->dev, "can't reserve memory region @%08lx (%08lx)\n", res->start, resource_size(res));
+		dev_err(&pdev->dev, "can't reserve memory region\n");
 		return -EBUSY;
 	}
 
 	udc->base = devm_ioremap_nocache(&pdev->dev, res->start, resource_size(res));
-	pr_debug("ISP1763 register base at %08lx\n", (unsigned long) udc->base);
 	if (!udc->base) {
 		dev_err(&pdev->dev, "can't remap memory region\n");
 		return -ENOMEM;
@@ -1146,7 +1150,7 @@ static int isp1763_udc_probe(struct platform_device *pdev)
 		return -ENODEV;
 	}
 
-	ret = devm_request_irq(&pdev->dev, res->start, isp1763_udc_irq, IRQF_TRIGGER_LOW, driver_name, udc);
+	ret = devm_request_irq(&pdev->dev, res->start, isp1763_udc_irq, 0, driver_name, udc);
 	if (ret) {
 		dev_err(&pdev->dev, "can't get IRQ %i\n", res->start);
 		return ret;
@@ -1175,8 +1179,6 @@ static int isp1763_udc_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, udc);
 	controller = udc;
-
-	pr_debug("<- leaving %s\n", __func__);
 
 	return 0;
 }

@@ -20,11 +20,12 @@
 #define ISP1763_REG_FRAME_NO		0x74
 #define ISP1763_REG_SCRATCH		0x78
 #define ISP1763_REG_UNLOCK		0x7C
+#define ISP1763_REG_INT_PULSE_WIDTH	0x80
 #define ISP1763_REG_HW_MODE_CTRL	0xB6
 #define ISP1763_REG_SWRESET		0xB8
 #define ISP1763_REG_HC_INT_EN		0xD6
-#define ISP1763_REG_OTG_CTRL_SET		0xE4
-#define ISP1763_REG_OTG_CTRL_CLR		0xE6
+#define ISP1763_REG_OTG_CTRL_SET	0xE4
+#define ISP1763_REG_OTG_CTRL_CLEAR	0xE6
 
 /* ISP1763 UDC register masks */
 
@@ -36,7 +37,7 @@
 #define ISP1763_MODE_WKUPCS		0x0004
 #define ISP1763_MODE_GLINTENA		0x0008
 #define ISP1763_MODE_SFRESET		0x0010
-#define ISP1763_MODE_CLKAON  		0x0080
+#define ISP1763_MODE_CLKAON		0x0080
 #define ISP1763_MODE_VBUSSTAT		0x0100
 #define ISP1763_MODE_DMACLKON		0x0200
 
@@ -47,11 +48,25 @@
 #define ISP1763_INT_CONF_CDBGMOD_ALL_ACK	0x0040
 
 #define ISP1763_DC_INT_BRESET		0x00000001
+#define ISP1763_DC_INT_SUSP		0x00000008
+#define ISP1763_DC_INT_RESM		0x00000010
+#define ISP1763_DC_INT_HS_STA		0x00000020
 #define ISP1763_DC_INT_VBUS		0x00000080
 #define ISP1763_DC_INT_EP0SETUP		0x00000100
 #define ISP1763_DC_INT_EP0RX		0x00000400
 #define ISP1763_DC_INT_EP0TX		0x00000800
 #define ISP1763_DC_INT_EP_ANY		0x03FFF000
+
+#define ISP1763_DC_INT_EN_DEFAULT	(ISP1763_DC_INT_EP0SETUP	\
+					 | ISP1763_DC_INT_EP0RX		\
+					 | ISP1763_DC_INT_EP0TX		\
+					 | ISP1763_DC_INT_VBUS		\
+					 | ISP1763_DC_INT_HS_STA	\
+					 | ISP1763_DC_INT_SUSP		\
+					 | ISP1763_DC_INT_BRESET	\
+					 | ISP1763_DC_INT_SUSP		\
+					 | ISP1763_DC_INT_RESM		\
+					 | ISP1763_DC_INT_EP_ANY)	/* TMP */
 
 #define ISP1763_CTRL_FUNC_STALL		0x0001
 #define ISP1763_CTRL_FUNC_STATUS	0x0002
@@ -73,6 +88,7 @@
 #define ISP1763_OTG_CTRL_DP_PULLUP	0x0001
 #define ISP1763_OTG_CTRL_DP_PULLDOWN	0x0002
 #define ISP1763_OTG_CTRL_DM_PULLDOWN	0x0004
+#define ISP1763_OTG_CTRL_VBUS_DRV	0x0010
 #define ISP1763_OTG_CTRL_SW_SEL_HC_DC	0x0080
 #define ISP1763_OTG_CTRL_OTG_DISABLE	0x0400
 
@@ -83,7 +99,10 @@
 #define ISP1763_CHIP_ID			0x00176320
 #define ISP1763_UNLOCK_CODE		0xAA37
 
-#define ISP1763_UDC_MAX_ENDPOINTS	14
+#define ISP1763_UDC_MAX_ENDPOINTS	15
+
+#define ISP1763_USB_REQ_CLASS		0x20
+#define ISP1763_USB_REQ_VENDOR		0x40
 
 struct isp1763_udc;
 
@@ -91,13 +110,13 @@ struct isp1763_ep {
 	struct usb_ep ep;
 	struct list_head queue;
 	struct isp1763_udc *udc;
-	unsigned int maxpacketsize;
 	char name[8];
-	u8 index;
+	u8 num;
+	u8 dir;
 };
 
-#define WINDEX_TO_ISP1763_EP_INDEX(x)	(((x & 0x0F) << 1) | (x >> 7))
-#define ISP1763_EP0_INDEX(is_tx)	(!!(is_tx))
+#define WINDEX_TO_EP_INDEX(x)	(((x & 0x0F) << 1) | (x >> 7))
+#define EP_INDEX(ep, dir)	(((ep) << 1) | (dir))
 
 struct isp1763_udc {
 	void __iomem *base;
@@ -120,7 +139,7 @@ struct isp1763_request {
 
 static inline bool isp1763_ep_is_tx(struct isp1763_ep *ep)
 {
-	return ep->index & 1;
+	return ep->dir == ISP1763_EP_INDEX_DIR_TX;
 }
 
 #define __REG(x)	((x) << 2)

@@ -1,6 +1,9 @@
 #ifndef _ISP1763_HCD_H_
 #define _ISP1763_HCD_H_
 
+int isp1763_hc_init(void);
+void isp1763_hc_exit(void);
+
 /* exports for isp1763-if */
 struct usb_hcd *isp1763_register(phys_addr_t res_start,
 				 resource_size_t res_len,

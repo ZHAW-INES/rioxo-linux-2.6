@@ -367,4 +367,18 @@ void isp1763_unregister_ctrl(int role);
 #define static_role_host(x) ((x & ISP1763_FLAG_PORT1_ROLE_OTG) \
 			== ISP1763_FLAG_PORT1_ROLE_HOST)
 
+static inline void disable_glint(struct isp1763_regs *regs)
+{
+	isp1763_writew(isp1763_readw(&regs->mode)
+				& ~MASK_MODE_GLINTENA, &regs->mode);
+}
+
+static inline void enable_glint(struct isp1763_regs *regs)
+{
+	isp1763_writew(isp1763_readw(&regs->mode)
+				| MASK_MODE_GLINTENA, &regs->mode);
+}
+
+#define disable_glint__(dev)	disable_glint(dev)
+
 #endif /* ! __ISP1763_H__ */

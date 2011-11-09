@@ -36,7 +36,7 @@
 #include "../core/hcd.h"
 #include "../core/hub.h"
 #include "isp1763.h"
-#include "isp1763_hcd.h"
+#include "isp1763-hcd.h"
 
 
 static struct kmem_cache *qtd_cachep;
@@ -1000,7 +1000,7 @@ static void do_atl_int(struct usb_hcd *usb_hcd)
 		if (unlikely(!nakcount && (dw3 & DW3_QTD_ACTIVE))) {
 			printk(KERN_NOTICE
 			       "Reloading ptd %p/%p... qh %p read: "
-			       "%d of %zu done: %08x cur: %08x\n", qtd,
+			       "%zu of %zu done: %08x cur: %08x\n", qtd,
 			       urb, qh, PTD_XFERRED_LENGTH(dw3),
 			       qtd->length, done_map, (1 << queue_entry));
 
@@ -2353,7 +2353,7 @@ static struct isp1763_controller isp1763_hc_controller = {
 	.probe = isp1763_hcd_probe,
 };
 
-static int __init isp1763_hc_init(void)
+int isp1763_hc_init(void)
 {
 	isp1763_register_ctrl(&isp1763_hc_controller, ROLE_HOST);
 	init_kmem_once();
@@ -2361,17 +2361,19 @@ static int __init isp1763_hc_init(void)
 	printk(KERN_ERR "isp1763 host controller driver loaded\n");
 	return 0;
 }
+EXPORT_SYMBOL(isp1763_hc_init);
 
-static void __exit isp1763_hc_exit(void)
+void isp1763_hc_exit(void)
 {
 	isp1763_unregister_ctrl(ROLE_HOST);
 	if (isp1763_hc_controller.priv)
 		usb_put_hcd(isp1763_hc_controller.priv);
 	return;
 }
+EXPORT_SYMBOL(isp1763_hc_exit);
 
-module_init(isp1763_hc_init);
-module_exit(isp1763_hc_exit);
+//module_init(isp1763_hc_init);
+//module_exit(isp1763_hc_exit);
 
 
 MODULE_DESCRIPTION("ISP1763 USB host controller driver");

@@ -74,8 +74,7 @@
 */
 
 #include "isp1763.h"
-#include "isp1763_udc.h"
-#include "isp1763_hcd.h"
+#include "isp1763-hcd.h"
 
 static struct isp1763_dev *ispdev;
 
@@ -83,7 +82,7 @@ static struct isp1763_dev *ispdev;
 #define DRIVER_NAME "isp1763"
 static const char driver_name[] = DRIVER_NAME;
 static const char driver_desc[] = "ISP 1763A device controller driver";
-static struct task_struct *otgtask;
+//static struct task_struct *otgtask;
 static char *role[] = { "HOST", "PERIPHERAL" };
 
 static unsigned int otg_role;
@@ -215,6 +214,7 @@ int otg_role_switcher(void *data)
 	return 0;
 }
 
+#if 0
 /**
  * otg_do_interrupt - Handle OTG interrupt
  * @dev: pointer to isp1763_dev struct
@@ -232,6 +232,7 @@ static void otg_do_interrupt(struct isp1763_dev *dev, u32 latch)
 			dev->otgtimer_cb(dev->otgtimer_data);
 	}
 }
+#endif
 
 /**
  * isp1763 - main IRQ handler
@@ -246,7 +247,7 @@ static irqreturn_t isp1763_irq(int irq, void *data)
 
 	isp1763_writew(UNLOCK_CODE, &dev->regs->unlock);
 
-	disable_glint(dev);
+	disable_glint(dev->regs);
 
 #if 0
 	flags_otg = isp1763_readw(&dev->regs->otg_int_latch_set);
@@ -280,7 +281,7 @@ static irqreturn_t isp1763_irq(int irq, void *data)
 				do_irq(dev->ctrl[ROLE_DEVICE], flags_dc);
 	}
 
-	enable_glint(dev);
+	enable_glint(dev->regs);
 
 	return IRQ_HANDLED;
 }
@@ -297,7 +298,7 @@ static int isp1763_init_device(struct isp1763_dev *dev)
 {
 	int i;
 	int ret = 0;
-	u32 base;
+//	u32 base;
 	u16 hwmode =
 		MASK_HWMODECTRL_COMN_INT | MASK_HWMODECTRL_GLOBAL_INT_ENABLE;
 
@@ -434,7 +435,7 @@ static int otg_setup(struct isp1763_dev *dev)
 
 	otg_set_role(dev, role);
 
-	enable_glint(dev);
+	enable_glint(dev->regs);
 
 	isp1763_writel(0xFFFF0000, &dev->regs->otg_int_enable_fall);
 	isp1763_writel(0xFFFF0000, &dev->regs->otg_int_enable_rise);
@@ -588,22 +589,20 @@ static int isp1763_common_init(struct device *dev,
 {
 	int ret = 0;
 
-	ispdev = kzalloc(sizeof(struct isp1763_dev), GFP_KERNEL);
+	ispdev = devm_kzalloc(dev, sizeof(struct isp1763_dev), GFP_KERNEL);
 	if (!ispdev)
 		return -ENOMEM;
 
 	ispdev->irq = irq;
 	ispdev->devflags = devflags;
-	ispdev->regs = ioremap_nocache(res->start, res_len);
-	if (!ispdev->regs) {
-		ret = -ENOMEM;
-		goto out_free;
-	}
+	ispdev->regs = devm_ioremap_nocache(dev, res->start, res_len);
+	if (!ispdev->regs)
+		return -ENOMEM;
 
-	ret = request_irq(ispdev->irq, isp1763_irq, IRQF_SHARED, "ISP1763 IRQ",
+	ret = devm_request_irq(dev, ispdev->irq, isp1763_irq, IRQF_SHARED, "ISP1763 IRQ",
 							(void *) ispdev);
 	if (ret)
-		goto out_free;
+		return ret;
 
 	isp1763_init_device(ispdev);
 	otg_setup(ispdev);
@@ -630,10 +629,6 @@ static int isp1763_common_init(struct device *dev,
 	}
 
 	return 0;
-
-out_free:
-	kfree(ispdev);
-	return ret;
 }
 
 #ifdef CONFIG_PPC_OF
@@ -932,12 +927,16 @@ static struct pci_driver isp1763_pci_driver = {
 
 static int __devexit isp1763_plat_remove(struct platform_device *pdev)
 {
+#if 0
 	struct resource *mem_res;
 	resource_size_t mem_size;
 
 	mem_res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	mem_size = resource_size(mem_res);
 	release_mem_region(mem_res->start, mem_size);
+#endif
+
+	/* devm takes care of releasing resources */
 
 	return 0;
 }
@@ -954,15 +953,13 @@ static int __devinit isp1763_plat_probe(struct platform_device *pdev)
 	mem_res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	if (!mem_res) {
 		pr_warning("isp1763: Memory resource not available\n");
-		ret = -ENODEV;
-		goto out;
+		return -ENODEV;
 	}
 	mem_size = resource_size(mem_res);
-	if (!request_mem_region(mem_res->start, mem_size, "isp1763")) {
+	if (!devm_request_mem_region(&pdev->dev, mem_res->start, mem_size, "isp1763")) {
 		pr_warning
 		    ("isp1763: Cannot reserve the memory resource\n");
-		ret = -EBUSY;
-		goto out;
+		return -EBUSY;
 	}
 
 	irq_res = platform_get_resource(pdev, IORESOURCE_IRQ, 0);
@@ -991,16 +988,8 @@ static int __devinit isp1763_plat_probe(struct platform_device *pdev)
 			devflags |= ISP1763_FLAG_INTR_EDGE_TRIG;
 	}
 
-	if (isp1763_common_init(&pdev->dev, devflags, irq_res->start,
-						mem_res, mem_size) < 0)
-		goto cleanup;
-
-	return ret;
-
-cleanup:
-	release_mem_region(mem_res->start, mem_size);
-out:
-	return ret;
+	return isp1763_common_init(&pdev->dev, devflags, irq_res->start,
+						mem_res, mem_size);
 }
 
 static struct platform_driver isp1763_plat_driver = {
@@ -1030,12 +1019,17 @@ static int __init isp1763_init(void)
 	if (!ret)
 		any_ret = 0;
 #endif
+	ret = isp1763_hc_init();
+	if (!ret)
+		any_ret = 0;
 
 	return any_ret;
 }
 
 static void __exit isp1763_exit(void)
 {
+	isp1763_hc_exit();
+
 #ifdef CONFIG_PPC_OF
 	of_unregister_platform_driver(&isp1763_driver);
 #endif
