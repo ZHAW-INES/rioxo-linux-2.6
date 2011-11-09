@@ -1116,8 +1116,6 @@ static int isp1763_udc_probe(struct platform_device *pdev)
 	struct resource *res;
 	int ret = 0;
 
-	pr_debug("-> entering %s\n", __func__);
-
 	/* only allow one instance */
 	if (controller)
 		return -EBUSY;
@@ -1181,8 +1179,6 @@ static int isp1763_udc_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, udc);
 	controller = udc;
-
-	pr_debug("<- leaving %s\n", __func__);
 
 	return 0;
 }

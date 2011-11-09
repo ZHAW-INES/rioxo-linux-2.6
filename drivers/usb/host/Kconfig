@@ -171,6 +171,12 @@ config USB_ISP1760_HCD
 	  To compile this driver as a module, choose M here: the
 	  module will be called isp1760.
 
+config USB_ISP1763_HCD
+	tristate "ISP 1763 HCD support"
+	depends on USB && EXPERIMENTAL
+	---help---
+	  Support for ST Ericsson ISP1763A USB Host Controller part.
+
 config USB_OHCI_HCD
 	tristate "OHCI HCD support"
 	depends on USB && USB_ARCH_HAS_OHCI
