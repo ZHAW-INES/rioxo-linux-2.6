@@ -122,7 +122,7 @@ static struct usb_endpoint_descriptor hidg_fs_in_ep_desc = {
 	.bEndpointAddress	= USB_DIR_IN,
 	.bmAttributes		= USB_ENDPOINT_XFER_INT,
 	/*.wMaxPacketSize	= DYNAMIC */
-	.bInterval		= 10, /* FIXME: Add this field in the
+	.bInterval		= 4, /* FIXME: Add this field in the
 				       * HID gadget configuration?
 				       * (struct hidg_func_descriptor)
 				       */
