@@ -1,7 +1,7 @@
 /*
  * isp1763_udc -- driver for ST Ericsson ISP1763 USB peripheral controller
  *
- * Copyright (C) 2011 Tobias Klauser <tklauser@distanz.ch>
+ * Copyright (C) 2011 Tobias Klauser <klto@zhaw.ch>
  * Copyright (C) 2010 F. Voegel, Carangul.Tech
  * Copyright (C) 2010 I+ME ACTIA Informatik und Mikroelektronik GmbH
  *
@@ -42,15 +42,41 @@ static struct isp1763_udc *controller = NULL;
 static void isp1763_udc_complete_req(struct isp1763_ep *ep,
 				     struct isp1763_request *req, int status)
 {
+	unsigned int stopped = ep->stopped;
+
 	/* remove request from ep queue */
-	dev_dbg(ep->udc->dev, "completing request on EP%d%s\n", ep->num, isp1763_ep_is_tx(ep) ? "TX" : "RX");
+	dev_dbg(ep->udc->dev, "completing request on %s\n", ep->num, ep->name);
 	list_del_init(&req->queue);
 	if (req->req.status == -EINPROGRESS)
 		req->req.status = status;
+	else
+		status = req->req.status;
+
+	if (status != -ESHUTDOWN) {
+		dev_dbg(ep->udc->dev, "complete %s, req %p, status %d, len %u/%u\n",
+				ep->name, &req->req, status,
+				req->req.actual, req->req.length);
+	}
+
+	/* don't modify queue heads during completion callback */
+	ep->stopped = 1;
 
 	spin_unlock(&ep->udc->lock);
-	req->req.complete(&ep->ep, &req->req);
+	if (req->req.complete)
+		req->req.complete(&ep->ep, &req->req);
 	spin_lock(&ep->udc->lock);
+	ep->stopped = stopped;
+}
+
+static void isp1763_udc_nuke_ep(struct isp1763_ep *ep, int status)
+{
+	ep->stopped = 1;
+
+	while (!list_empty(&ep->queue)) {
+		struct isp1763_request *req = list_entry(ep->queue.next,
+							 struct	isp1763_request, queue);
+		isp1763_udc_complete_req(ep, req, status);
+	}
 }
 
 static void isp1763_udc_enable_glint(struct isp1763_udc *udc)
@@ -105,7 +131,6 @@ static void isp1763_udc_set_ep_index(struct isp1763_udc *udc, u8 index)
 {
 	isp1763_writew(udc, index, ISP1763_REG_EP_INDEX);
 	isp1763_writew(udc, ~index, ISP1763_REG_EP_INDEX);
-	udelay(1);
 }
 
 static void isp1763_udc_connect(struct isp1763_udc *udc)
@@ -133,6 +158,8 @@ static void isp1763_udc_connect(struct isp1763_udc *udc)
 	tmp = ISP1763_INT_CONF_DDBGMODOUT_ALL_ACK
 		| ISP1763_INT_CONF_DDBGMODIN_ALL_ACK
 		| ISP1763_INT_CONF_CDBGMOD_ALL_ACK;
+	tmp &= ~ISP1763_INT_CONF_INTPOL;
+	tmp &= ~ISP1763_INT_CONF_INTLVL;
 	isp1763_writew(udc, tmp, ISP1763_REG_INT_CONF);
 
 	/* Enable default interrupts */
@@ -143,22 +170,6 @@ static void isp1763_udc_connect(struct isp1763_udc *udc)
 		| ISP1763_HW_MODE_CTRL_GLOBAL_INTR_EN
 		| ISP1763_HW_MODE_CTRL_ID_PULLUP;	/* disable sampling of ID line */
 	isp1763_writew(udc, tmp, ISP1763_REG_HW_MODE_CTRL);
-}
-
-static void __ep_disable(struct isp1763_ep *ep)
-{
-	struct isp1763_udc *udc = ep->udc;
-	u32 tmp;
-
-	/* disable interrupt for this endpoint (XXX: shall we do this here?) */
-	tmp = isp1763_readl(udc, ISP1763_REG_DC_INT_EN);
-	isp1763_writel(udc, tmp & ~(1 << (ep->num + ep->dir + 10)), ISP1763_REG_DC_INT_EN);
-
-	udc->ep_fifo_space += ep->ep.maxpacket;
-	ep->ep.maxpacket = 0;
-
-	isp1763_udc_set_ep_index(udc, EP_INDEX(ep->num, ep->dir));
-	isp1763_writew(udc, 0, ISP1763_REG_EP_TYPE);
 }
 
 static void isp1763_udc_stall_ep(struct isp1763_ep *ep, int do_stall)
@@ -197,6 +208,7 @@ static void isp1763_udc_write_ep(struct isp1763_ep *ep,
 	}
 
 	to_write = req->req.length - req->req.actual;
+
 	if (to_write > ep->ep.maxpacket)
 		to_write = ep->ep.maxpacket;
 
@@ -304,36 +316,25 @@ static int isp1763_udc_handle_ep_irq(struct isp1763_ep *ep)
 		return 0;
 	}
 
-	isp1763_udc_set_ep_index(udc, EP_INDEX(ep->num, ep->dir));
 	req = list_entry(ep->queue.next, struct isp1763_request, queue);
+	isp1763_udc_set_ep_index(udc, EP_INDEX(ep->num, ep->dir));
 
 	if (isp1763_ep_is_tx(ep)) {
-		bool complete = false;
-		unsigned int i;
-
-		dev_dbg(udc->dev, "write %s: actual = %u length = %u", ep->name,
-			req->req.actual, req->req.length);
-
-#ifdef DEBUG
-		for (i = 0; i < req->req.length; i++)
-			pr_cont(" %02x", ((unsigned char *)req->req.buf)[i]);
-		pr_cont("\n");
-#endif
-
 		/*
 		 * Check if there is more data to write for previous packet,
 		 * otherwise send completion
 		 */
 
-		/* insert ZLP after 512 bytes */
 		if (req->req.actual == req->req.length) {
+			/* insert ZLP after 512 bytes */
 			if (req->req.actual > 0 && req->req.actual % 512 == 0)
 				isp1763_udc_zlp(udc);
 
-			complete = true;
+			isp1763_udc_complete_req(ep, req, 0);
+		} else {
+			/* Complete if we can write everything */
+			isp1763_udc_write_ep(ep, req, true);
 		}
-
-		isp1763_udc_write_ep(ep, req, complete);
 	} else {
 		dev_dbg(udc->dev, "read %s: actual = %u length = %u\n", ep->name,
 			req->req.actual, req->req.length);
@@ -485,6 +486,10 @@ static int isp1763_udc_ep_enable(struct usb_ep *_ep,
 	if (!desc)
 		return -EINVAL;
 
+	if (ep == &udc->ep[0]) {
+		pr_err("ERROR ep_enable(ep0)\n");
+	}
+
 	/* Check whether we've got enough space in the shared FIFO */
 	fifo_size = le16_to_cpu(desc->wMaxPacketSize) & 0x7FF;
 	if (fifo_size > udc->ep_fifo_space)
@@ -492,10 +497,10 @@ static int isp1763_udc_ep_enable(struct usb_ep *_ep,
 
 	spin_lock_irqsave(&udc->lock, flags);
 
-	dev_dbg(udc->dev, "ep_enable(%i): %s type %x maxsize %d\n", ep->num, ep->name,
+	dev_dbg(udc->dev, "ep_enable(%s, %i, %i) type %x maxsize %d\n",
+		ep->name, ep->num, ep->dir,
 		usb_endpoint_type(desc), le16_to_cpu(desc->wMaxPacketSize));
 
-	dev_dbg(udc->dev, "Set EP index: %04x\n", EP_INDEX(ep->num, ep->dir));
 	isp1763_udc_set_ep_index(udc, EP_INDEX(ep->num, ep->dir));
 
 	isp1763_writew(udc, usb_endpoint_type(desc), ISP1763_REG_EP_TYPE);
@@ -513,14 +518,14 @@ static int isp1763_udc_ep_enable(struct usb_ep *_ep,
 	ep->ep.maxpacket = fifo_size;
 	udc->ep_fifo_space -= fifo_size;
 
-	/* enable interrupt for this endpoint (XXX: shall we do this here?) */
-	tmp = isp1763_readl(udc, ISP1763_REG_DC_INT_EN);
-#if 0
-	dev_dbg(udc->dev, "DcIntEnable: %08x\n", tmp);
-	isp1763_writel(udc, tmp | (1 << (ep->num + ep->dir + 10)), ISP1763_REG_DC_INT_EN);
+	/* enable interrupt for this endpoint */
 	tmp = isp1763_readl(udc, ISP1763_REG_DC_INT_EN);
 	dev_dbg(udc->dev, "DcIntEnable: %08x\n", tmp);
-#endif
+	isp1763_writel(udc, tmp | EP_IRQ_BIT(ep->num, ep->dir), ISP1763_REG_DC_INT_EN);
+	tmp = isp1763_readl(udc, ISP1763_REG_DC_INT_EN);
+	dev_dbg(udc->dev, "DcIntEnable: %08x\n", tmp);
+
+	ep->stopped = 0;
 
 	spin_unlock_irqrestore(&udc->lock, flags);
 
@@ -532,6 +537,7 @@ static int isp1763_udc_ep_disable(struct usb_ep *_ep)
 	struct isp1763_ep *ep = container_of(_ep, struct isp1763_ep, ep);
 	struct isp1763_udc *udc = ep->udc;
 	unsigned long flags;
+	u32 tmp;
 
 	if (ep == &udc->ep[0]) {
 		dev_err(udc->dev, "Cannot disable EP0\n");
@@ -539,7 +545,20 @@ static int isp1763_udc_ep_disable(struct usb_ep *_ep)
 	}
 
 	spin_lock_irqsave(&udc->lock, flags);
-	__ep_disable(ep);
+
+	tmp = isp1763_readl(udc, ISP1763_REG_DC_INT_EN);
+	isp1763_writel(udc, tmp & ~EP_IRQ_BIT(ep->num, ep->dir), ISP1763_REG_DC_INT_EN);
+
+	udc->ep_fifo_space += ep->ep.maxpacket;
+	ep->ep.maxpacket = 0;
+	ep->stopped = 1;
+
+	isp1763_udc_set_ep_index(udc, EP_INDEX(ep->num, ep->dir));
+	isp1763_writew(udc, 0, ISP1763_REG_EP_TYPE);
+
+	/* nuke all requests pending on this endpoint */
+	isp1763_udc_nuke_ep(ep, -ESHUTDOWN);
+
 	spin_unlock_irqrestore(&udc->lock, flags);
 
 	return 0;
@@ -587,16 +606,7 @@ static int isp1763_udc_ep_queue(struct usb_ep *_ep, struct usb_request *_req,
 	if (!udc || !udc->driver || udc->gadget.speed == USB_SPEED_UNKNOWN)
 		return -EINVAL;
 
-	dev_dbg(udc->dev, "ep_queue(%s): %d bytes:", ep->name, _req->length);
-
-#ifdef DEBUG
-	if (ep != &udc->ep[0]) {
-		unsigned int i;
-		for (i = 0; i < _req->length; i++)
-			pr_cont(" %02x", ((unsigned char *) (_req->buf))[i]);
-	}
-	pr_cont("\n");
-#endif
+	dev_dbg(udc->dev, "ep_queue(%s) %d bytes:", ep->name, _req->length);
 
 	_req->status = -EINPROGRESS;
 	_req->actual = 0;
@@ -617,8 +627,6 @@ static int isp1763_udc_ep_queue(struct usb_ep *_ep, struct usb_request *_req,
 				isp1763_udc_set_vendp(udc);
 		} else {
 			unsigned int i;
-
-			dev_dbg(udc->dev, "EP0RX transfer\n");
 
 			mdelay(1);
 			memset(_req->buf, 0, _req->length);
@@ -642,19 +650,17 @@ more:
 		}
 
 	} else {	/* normal data transfer */
-		dev_dbg(udc->dev, "Normal data transfer\n");
-
 		/* IN transfer */
 		if (isp1763_ep_is_tx(ep)) {
 			if (isp1763_readw(udc, ISP1763_REG_BUF_LEN == 0) &&
 			    !list_empty(&ep->queue)) {
 				isp1763_udc_set_ep_index(udc, EP_INDEX(ep->num, ep->dir));
 				isp1763_udc_write_ep(ep, req, false);
-#if 0
-				if (req->req.actual == req->req.length)
-					isp1763_udc_set_vendp(udc);
-#endif
+			} else {
+				pr_err("Cannot write to ep %s\n", ep->name);
 			}
+		} else {
+			pr_err("queue non-tx on %s\n", ep->name);
 		}
 
 	}
@@ -671,6 +677,7 @@ static int isp1763_udc_ep_dequeue(struct usb_ep *_ep, struct usb_request *_req)
 	struct isp1763_request *req;
 	struct isp1763_udc *udc;
 	unsigned long flags;
+	unsigned int stopped;
 
 	if (!_ep)
 		return -EINVAL;
@@ -682,6 +689,8 @@ static int isp1763_udc_ep_dequeue(struct usb_ep *_ep, struct usb_request *_req)
 		return -EINVAL;
 
 	spin_lock_irqsave(&udc->lock, flags);
+	stopped = ep->stopped;
+	ep->stopped = 1;
 
 	/* make sure the request is actually queued on this endpoint */
 	list_for_each_entry(req, &ep->queue, queue) {
@@ -695,6 +704,8 @@ static int isp1763_udc_ep_dequeue(struct usb_ep *_ep, struct usb_request *_req)
 	}
 
 	isp1763_udc_complete_req(ep, req, -ECONNRESET);
+
+	ep->stopped = stopped;
 	spin_unlock_irqrestore(&udc->lock, flags);
 
 	return 0;
@@ -843,7 +854,6 @@ static irqreturn_t isp1763_udc_irq(int irq, void *data)
 			isp1763_writew(udc, tmp, ISP1763_REG_OTG_CTRL_SET);
 		} else
 			isp1763_writew(udc, ISP1763_OTG_CTRL_DP_PULLUP, ISP1763_REG_OTG_CTRL_CLEAR);
-
 	}
 
 	/* EP0 setup */
@@ -857,8 +867,6 @@ static irqreturn_t isp1763_udc_irq(int irq, void *data)
 	if (irqs & ISP1763_DC_INT_EP0RX) {
 		struct isp1763_request *req;
 		struct isp1763_ep *ep0 = &udc->ep[0];
-
-		dev_dbg(udc->dev, "EP0RX\n");
 
 		isp1763_udc_set_ep_index(udc, EP_INDEX(0, ISP1763_EP_INDEX_DIR_RX));
 
@@ -874,7 +882,7 @@ static irqreturn_t isp1763_udc_irq(int irq, void *data)
 
 		req = list_entry(ep0->queue.next, struct isp1763_request, queue);
 
-		dev_dbg(udc->dev, "EP0TX: request len=%d, written=%d\n",
+		dev_dbg(udc->dev, "EP0RX: request len=%d, written=%d\n",
 				req->req.length, req->req.actual);
 
 		isp1763_udc_read_ep(ep0, req, false);
@@ -887,8 +895,6 @@ ep0rx_out:
 	if (irqs & ISP1763_DC_INT_EP0TX) {
 		struct isp1763_ep *ep = &udc->ep[0];
 		struct isp1763_request *req;
-
-		dev_dbg(udc->dev, "EP0TX\n");
 
 		if (ep->dir != ISP1763_EP_INDEX_DIR_TX)
 			goto ep0tx_out;
@@ -919,11 +925,14 @@ ep0rx_out:
 ep0tx_out:
 
 	if (irqs & ISP1763_DC_INT_BRESET) {
+		unsigned int i;
+
 		dev_dbg(udc->dev, "BRESET\n");
 
 		isp1763_writel(udc, 0, ISP1763_REG_DC_INT);
 		isp1763_udc_connect(udc);
-		isp1763_writel(udc, ISP1763_DC_INT_EP_ANY | ISP1763_DC_INT_EN_DEFAULT, ISP1763_REG_DC_INT_EN);
+
+		/* TODO: Complete any pending requests */
 	}
 
 	/* EP interrupts */
@@ -933,8 +942,10 @@ ep0tx_out:
 		/* EP0 is special and not handled here */
 		for (i = 1; i < ISP1763_UDC_MAX_ENDPOINTS; i++) {
 			if (irqs & (1 << (11 + i))) {
+#if 1
 				if (isp1763_udc_handle_ep_irq(&udc->ep[i]))
 					dev_err(udc->dev, "Error while handling endpoint interrupt for EP %s\n", udc->ep[i + 1].name);
+#endif
 			}
 		}
 	}
@@ -950,8 +961,6 @@ static int isp1763_udc_init_hw(struct isp1763_udc *udc)
 	u32 chip_id;
 	u16 tmp;
 	int ret;
-
-	pr_debug("-> entering %s\n", __func__);
 
 	/* Unlock the controller */
 	isp1763_writew(udc, ISP1763_UNLOCK_CODE, ISP1763_REG_UNLOCK);
@@ -1022,15 +1031,13 @@ static int isp1763_udc_init_hw(struct isp1763_udc *udc)
 	if (ret)
 		return ret;
 
-#if 0
-	isp1763_writew(udc, hwmode, ISP1763_REG_HW_MODE_CTRL);
-
-	/* Set interrupt level */
+	/* Set interrupt level and bus width */
 	tmp = isp1763_readw(udc, ISP1763_REG_HW_MODE_CTRL);
 	tmp &= ~ISP1763_HW_MODE_CTRL_INTR_POL;
 	tmp &= ~ISP1763_HW_MODE_CTRL_INTR_LEVEL;
+	tmp &= ~ISP1763_HW_MODE_CTRL_DATA_BUS_WIDTH;
 	isp1763_writew(udc, tmp, ISP1763_REG_HW_MODE_CTRL);
-#endif
+
 	/* Enable device mode */
 	isp1763_writew(udc, 0xFFFF, ISP1763_REG_OTG_CTRL_CLEAR);
 	tmp = isp1763_readw(udc, ISP1763_REG_OTG_CTRL_SET);
@@ -1054,8 +1061,6 @@ static int isp1763_udc_init_hw(struct isp1763_udc *udc)
 
 	/* "Connect" the chip */
 	isp1763_udc_connect(udc);
-
-	pr_debug("<- leaving %s\n", __func__);
 
 	return 0;
 }
@@ -1083,6 +1088,8 @@ static void isp1763_udc_setup_device(struct isp1763_udc *udc)
 	for (i = 0; i < ISP1763_UDC_MAX_ENDPOINTS; i++) {
 		struct isp1763_ep *ep = &udc->ep[i];
 
+		ep->num = (i + 1) >> 1;
+
 		/* ep0 is special */
 		if (i == 0) {
 			ep->ep.maxpacket = 64;
@@ -1090,7 +1097,7 @@ static void isp1763_udc_setup_device(struct isp1763_udc *udc)
 			ep->dir = 255;
 		} else {
 			snprintf(ep->name, 8, "ep%i%s",
-				 (i + 1) >> 1,
+				 ep->num,
 				 ((i + 1) & 1) ? "in" : "out");
 			ep->ep.maxpacket = 4096;
 			ep->dir = ((i + 1) & 1) ?
@@ -1098,12 +1105,11 @@ static void isp1763_udc_setup_device(struct isp1763_udc *udc)
 		}
 
 		ep->ep.name = ep->name;
-		dev_dbg(udc->dev, "%d: ep->name = %s\n", i, ep->name);
 		ep->ep.ops = &isp1763_udc_ep_ops;
 
 		INIT_LIST_HEAD(&ep->queue);
 		ep->udc = udc;
-		ep->num = (i + 1) >> 1;
+		ep->stopped = 0;
 
 		if (i != 0)
 			list_add_tail(&ep->ep.ep_list, &udc->gadget.ep_list);

@@ -65,8 +65,7 @@
 					 | ISP1763_DC_INT_SUSP		\
 					 | ISP1763_DC_INT_BRESET	\
 					 | ISP1763_DC_INT_SUSP		\
-					 | ISP1763_DC_INT_RESM		\
-					 | ISP1763_DC_INT_EP_ANY)	/* TMP */
+					 | ISP1763_DC_INT_RESM)
 
 #define ISP1763_CTRL_FUNC_STALL		0x0001
 #define ISP1763_CTRL_FUNC_STATUS	0x0002
@@ -111,12 +110,14 @@ struct isp1763_ep {
 	struct list_head queue;
 	struct isp1763_udc *udc;
 	char name[8];
+	unsigned int stopped;
 	u8 num;
 	u8 dir;
 };
 
 #define WINDEX_TO_EP_INDEX(x)	(((x & 0x0F) << 1) | (x >> 7))
 #define EP_INDEX(ep, dir)	(((ep) << 1) | (dir))
+#define EP_IRQ_BIT(ep, dir)	(1 << ((ep) + (dir) + 11))
 
 struct isp1763_udc {
 	void __iomem *base;
