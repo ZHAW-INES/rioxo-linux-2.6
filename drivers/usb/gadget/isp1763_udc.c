@@ -806,17 +806,11 @@ int usb_gadget_probe_driver(struct usb_gadget_driver *driver,
 	unsigned long flags;
 	int ret;
 
-	dev_dbg(udc->dev, "-> %s\n", __func__);
-
-	if (!udc || !driver || !bind || !driver->unbind || !driver->setup) {
-		dev_err(udc->dev, "%s failed\n", __func__);
+	if (!udc || !driver || !bind || !driver->unbind || !driver->setup)
 		return -EINVAL;
-	}
 
-	if (udc->driver) {
-		dev_err(udc->dev, "already has a driver\n", __func__);
+	if (udc->driver)
 		return -EBUSY;
-	}
 
 	spin_lock_irqsave(&udc->lock, flags);
 
@@ -973,18 +967,10 @@ ep0rx_out:
 ep0tx_out:
 
 	if (irqs & ISP1763_DC_INT_BRESET) {
-		unsigned int i;
-
 		dev_dbg(udc->dev, "BRESET\n");
 
 		isp1763_writel(udc, 0, ISP1763_REG_DC_INT_EN);
 		udc->gadget.speed = USB_SPEED_FULL;
-
-#if 0
-		/* Disable endpoints */
-		for (i = 1; i < ISP1763_UDC_MAX_ENDPOINTS; i++)
-			__ep_disable(&udc->ep[i]);
-#endif
 
 		isp1763_udc_connect(udc);
 	}
