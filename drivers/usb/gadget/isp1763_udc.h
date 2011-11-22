@@ -117,7 +117,7 @@ struct isp1763_ep {
 
 #define WINDEX_TO_EP_INDEX(x)	(((x & 0x0F) << 1) | (x >> 7))
 #define EP_INDEX(ep, dir)	(((ep) << 1) | (dir))
-#define EP_IRQ_BIT(ep, dir)	(1 << ((ep) + (dir) + 11))
+#define EP_IRQ_BIT(ep, dir)	(1 << (((ep) * 2) + (dir) + 10))
 
 struct isp1763_udc {
 	void __iomem *base;

@@ -45,7 +45,7 @@ static void isp1763_udc_complete_req(struct isp1763_ep *ep,
 	unsigned int stopped = ep->stopped;
 
 	/* remove request from ep queue */
-	dev_dbg(ep->udc->dev, "completing request on %s\n", ep->num, ep->name);
+	dev_dbg(ep->udc->dev, "completing request on %s\n", ep->name);
 	list_del_init(&req->queue);
 	if (req->req.status == -EINPROGRESS)
 		req->req.status = status;
@@ -131,6 +131,27 @@ static void isp1763_udc_set_ep_index(struct isp1763_udc *udc, u8 index)
 {
 	isp1763_writew(udc, index, ISP1763_REG_EP_INDEX);
 	isp1763_writew(udc, ~index, ISP1763_REG_EP_INDEX);
+	udelay(1);
+}
+
+static void isp1763_udc_configure_ep0(struct isp1763_udc *udc)
+{
+	unsigned int i;
+
+	for (i = 0; i < 2; i++) {
+		/* setup EP0 out */
+		isp1763_udc_set_ep_index(udc, EP_INDEX(0, ISP1763_EP_INDEX_DIR_RX));
+		isp1763_writew(udc, 64, ISP1763_REG_EP_MAXPKTSIZE);
+		isp1763_writew(udc, i << 3, ISP1763_REG_EP_TYPE);
+		/* setup EP0 in */
+		isp1763_udc_set_ep_index(udc, EP_INDEX(0, ISP1763_EP_INDEX_DIR_TX));
+		isp1763_writew(udc, 64, ISP1763_REG_EP_MAXPKTSIZE);
+		isp1763_writew(udc, i << 3, ISP1763_REG_EP_TYPE);
+		/* setup EP0SETUP */
+		isp1763_udc_set_ep_index(udc, ISP1763_EP_INDEX_EP0SETUP);
+		isp1763_writew(udc, 64, ISP1763_REG_EP_MAXPKTSIZE);
+		isp1763_writew(udc, i << 3, ISP1763_REG_EP_TYPE);
+	}
 }
 
 static void isp1763_udc_connect(struct isp1763_udc *udc)
@@ -397,6 +418,7 @@ static void isp1763_udc_handle_ep0setup(struct isp1763_udc *udc)
 	case USB_REQ_CLEAR_FEATURE:
 		if (wValue == USB_ENDPOINT_HALT) {
 			struct isp1763_ep *ep = &udc->ep[WINDEX_TO_EP_INDEX(wIndex)];
+			dev_dbg(udc->dev, "stall_ep(%s, %d) -> %d\n", ep->name, wIndex, pkt.r.bRequest == USB_REQ_SET_FEATURE);
 			isp1763_udc_stall_ep(ep, pkt.r.bRequest == USB_REQ_SET_FEATURE ? 1 : 0);
 		} else
 			isp1763_udc_set_status(udc);
@@ -405,9 +427,13 @@ static void isp1763_udc_handle_ep0setup(struct isp1763_udc *udc)
 	default:
 		if (udc->driver) {
 			dev_dbg(udc->dev, "Setting up gadget driver\n");
+			spin_unlock(&udc->lock);
 			status = udc->driver->setup(&udc->gadget, &pkt.r);
-		} else
+			spin_lock(&udc->lock);
+		} else {
+			dev_err(udc->dev, "no driver\n");
 			status = -ENODEV;
+		}
 		if (status < 0) {
 			dev_dbg(udc->dev, "req %02x.%02x protocol STALL; status %d\n",
 				pkt.r.bRequestType, pkt.r.bRequest, status);
@@ -488,6 +514,7 @@ static int isp1763_udc_ep_enable(struct usb_ep *_ep,
 
 	if (ep == &udc->ep[0]) {
 		pr_err("ERROR ep_enable(ep0)\n");
+		return -EINVAL;
 	}
 
 	/* Check whether we've got enough space in the shared FIFO */
@@ -532,21 +559,10 @@ static int isp1763_udc_ep_enable(struct usb_ep *_ep,
 	return 0;
 }
 
-static int isp1763_udc_ep_disable(struct usb_ep *_ep)
+static void __ep_disable(struct isp1763_ep *ep)
 {
-	struct isp1763_ep *ep = container_of(_ep, struct isp1763_ep, ep);
 	struct isp1763_udc *udc = ep->udc;
-	unsigned long flags;
-	u32 tmp;
-
-	if (ep == &udc->ep[0]) {
-		dev_err(udc->dev, "Cannot disable EP0\n");
-		return -EINVAL;
-	}
-
-	spin_lock_irqsave(&udc->lock, flags);
-
-	tmp = isp1763_readl(udc, ISP1763_REG_DC_INT_EN);
+	u32 tmp = isp1763_readl(udc, ISP1763_REG_DC_INT_EN);
 	isp1763_writel(udc, tmp & ~EP_IRQ_BIT(ep->num, ep->dir), ISP1763_REG_DC_INT_EN);
 
 	udc->ep_fifo_space += ep->ep.maxpacket;
@@ -558,10 +574,38 @@ static int isp1763_udc_ep_disable(struct usb_ep *_ep)
 
 	/* nuke all requests pending on this endpoint */
 	isp1763_udc_nuke_ep(ep, -ESHUTDOWN);
+}
 
+static int isp1763_udc_ep_disable(struct usb_ep *_ep)
+{
+	struct isp1763_ep *ep = container_of(_ep, struct isp1763_ep, ep);
+	struct isp1763_udc *udc = ep->udc;
+	unsigned long flags;
+
+	if (ep == &udc->ep[0]) {
+		dev_err(udc->dev, "Cannot disable EP0\n");
+		return -EINVAL;
+	}
+
+	spin_lock_irqsave(&udc->lock, flags);
+	__ep_disable(ep);
 	spin_unlock_irqrestore(&udc->lock, flags);
 
 	return 0;
+}
+
+static void isp1763_udc_stop_activity(struct isp1763_udc *udc)
+{
+	unsigned int i;
+
+	for (i = 0; i < ISP1763_UDC_MAX_ENDPOINTS; i++)
+		isp1763_udc_nuke_ep(&udc->ep[i], -ESHUTDOWN);
+
+	if (udc->driver) {
+		spin_unlock(&udc->lock);
+		udc->driver->disconnect(&udc->gadget);
+		spin_lock(&udc->lock);
+	}
 }
 
 static struct usb_request *isp1763_udc_ep_alloc_request(struct usb_ep *ep,
@@ -606,7 +650,7 @@ static int isp1763_udc_ep_queue(struct usb_ep *_ep, struct usb_request *_req,
 	if (!udc || !udc->driver || udc->gadget.speed == USB_SPEED_UNKNOWN)
 		return -EINVAL;
 
-	dev_dbg(udc->dev, "ep_queue(%s) %d bytes:", ep->name, _req->length);
+	dev_dbg(udc->dev, "ep_queue(%s) %d bytes (DcIntEn=%08x)\n", ep->name, _req->length, isp1763_readl(udc, ISP1763_REG_DC_INT_EN));
 
 	_req->status = -EINPROGRESS;
 	_req->actual = 0;
@@ -755,48 +799,40 @@ static struct usb_gadget_ops isp1763_udc_gadget_ops = {
 	.get_frame	= isp1763_udc_get_frame,
 };
 
-static void isp1763_udc_configure_ep0(struct isp1763_udc *udc)
-{
-	unsigned int i;
-
-	for (i = 0; i < 2; i++) {
-		/* setup EP0 out */
-		isp1763_udc_set_ep_index(udc, EP_INDEX(0, ISP1763_EP_INDEX_DIR_RX));
-		isp1763_writew(udc, 64, ISP1763_REG_EP_MAXPKTSIZE);
-		isp1763_writew(udc, i << 3, ISP1763_REG_EP_TYPE);
-		/* setup EP0 in */
-		isp1763_udc_set_ep_index(udc, EP_INDEX(0, ISP1763_EP_INDEX_DIR_TX));
-		isp1763_writew(udc, 64, ISP1763_REG_EP_MAXPKTSIZE);
-		isp1763_writew(udc, i << 3, ISP1763_REG_EP_TYPE);
-		/* setup EP0SETUP */
-		isp1763_udc_set_ep_index(udc, ISP1763_EP_INDEX_EP0SETUP);
-		isp1763_writew(udc, 64, ISP1763_REG_EP_MAXPKTSIZE);
-		isp1763_writew(udc, i << 3, ISP1763_REG_EP_TYPE);
-	}
-}
-
 int usb_gadget_probe_driver(struct usb_gadget_driver *driver,
 			    int (*bind)(struct usb_gadget *))
 {
 	struct isp1763_udc *udc = controller;
+	unsigned long flags;
 	int ret;
 
-	if (!udc || !driver || !bind || !driver->unbind || !driver->setup)
+	dev_dbg(udc->dev, "-> %s\n", __func__);
+
+	if (!udc || !driver || !bind || !driver->unbind || !driver->setup) {
+		dev_err(udc->dev, "%s failed\n", __func__);
 		return -EINVAL;
+	}
 
-	if (udc->driver)
+	if (udc->driver) {
+		dev_err(udc->dev, "already has a driver\n", __func__);
 		return -EBUSY;
+	}
 
+	spin_lock_irqsave(&udc->lock, flags);
+
+	driver->driver.bus = NULL;
 	udc->driver = driver;
+	udc->gadget.dev.driver = &driver->driver;
+	isp1763_udc_configure_ep0(udc);
+
+	spin_unlock_irqrestore(&udc->lock, flags);
 
 	ret = bind(&udc->gadget);
 	if (ret) {
-		dev_err(udc->dev, "Failed to bind gadget\n");
+		dev_err(udc->dev, "Failed to bind gadget: %d\n", ret);
 		udc->driver = NULL;
 		return ret;
 	}
-
-	isp1763_udc_configure_ep0(udc);
 
 	dev_dbg(udc->dev, "bound to %s\n", driver->driver.name);
 
@@ -807,11 +843,23 @@ EXPORT_SYMBOL(usb_gadget_probe_driver);
 int usb_gadget_unregister_driver(struct usb_gadget_driver *driver)
 {
 	struct isp1763_udc *udc = controller;
+	unsigned long flags;
 
 	if (!udc || !driver || driver != udc->driver || !driver->unbind)
-		return 0;
+		return -EINVAL;
+
+	spin_lock_irqsave(&udc->lock, flags);
+
+	/* Disable interrupts */
+	isp1763_writel(udc, 0, ISP1763_REG_DC_INT);
+
+	udc->gadget.speed = USB_SPEED_UNKNOWN;
+	isp1763_udc_stop_activity(udc);
+
+	spin_unlock_irqrestore(&udc->lock, flags);
 
 	driver->unbind(&udc->gadget);
+	udc->gadget.dev.driver = NULL;
 	udc->driver = NULL;
 
 	dev_dbg(udc->dev, "unbound from %s\n", driver->driver.name);
@@ -929,10 +977,16 @@ ep0tx_out:
 
 		dev_dbg(udc->dev, "BRESET\n");
 
-		isp1763_writel(udc, 0, ISP1763_REG_DC_INT);
-		isp1763_udc_connect(udc);
+		isp1763_writel(udc, 0, ISP1763_REG_DC_INT_EN);
+		udc->gadget.speed = USB_SPEED_FULL;
 
-		/* TODO: Complete any pending requests */
+#if 0
+		/* Disable endpoints */
+		for (i = 1; i < ISP1763_UDC_MAX_ENDPOINTS; i++)
+			__ep_disable(&udc->ep[i]);
+#endif
+
+		isp1763_udc_connect(udc);
 	}
 
 	/* EP interrupts */
