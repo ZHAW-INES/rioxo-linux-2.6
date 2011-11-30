@@ -47,8 +47,8 @@ static struct hidg_func_descriptor my_keyboard_hid_data = {
 static struct hidg_func_descriptor my_mouse_hid_data = {
 	.subclass		= 0, /* No subclass */
 	.protocol		= 2, /* Mouse */
-	.report_length		= 3,
-	.report_desc_length	= 50,
+	.report_length		= 4,
+	.report_desc_length	= 52,
 	/* USB Device Class Definition for HID: E.10 Report Descriptor (Mouse) */
 	.report_desc		= {
 		0x05, 0x01,	/* USAGE_PAGE (Generic Desktop)	              */
@@ -70,10 +70,12 @@ static struct hidg_func_descriptor my_mouse_hid_data = {
 		0x05, 0x01,	/*     USAGE_PAGE (Generic Desktop)           */
 		0x09, 0x30,	/*     USAGE (X)                              */
 		0x09, 0x31,	/*     USAGE (Y)                              */
+		0x09, 0x38,	/*     USAGE (SCROLL)                         */
 		0x15, 0x81,	/*     LOGICAL_MINIMUM (-127)                 */
 		0x25, 0x7F,	/*     LOGICAL_MAXIMUM (127)                  */
 		0x75, 0x08,	/*     REPORT_SIZE (8)                        */
-		0x95, 0x02,	/*     REPORT_COUNT (2)                       */
+		0x95, 0x03,	/*     REPORT_COUNT (3)                       */
+		//0x95, 0x02,	/*     REPORT_COUNT (2)                       */
 		0x81, 0x06,	/*     INPUT (Data,Var,Rel)  ; 2 position bytes (X & Y) */
 		0xc0,		/*   END_COLLECTION                           */
 		0xc0		/* END_COLLECTION                             */
