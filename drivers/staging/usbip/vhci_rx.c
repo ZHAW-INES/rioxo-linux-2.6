@@ -208,21 +208,22 @@ static void vhci_rx_pdu(struct usbip_device *ud)
 	/* 1. receive a pdu header */
 	ret = usbip_xmit(0, ud->tcp_socket, (char *) &pdu, sizeof(pdu), 0);
 	if (ret < 0) {
-		if (ret == -ECONNRESET)
+		if (ret == -ECONNRESET){
 			pr_info("connection reset by peer\n");
-		else if (ret == -EAGAIN) {
+		}else if (ret == -EAGAIN) {
 			/* ignore if connection was idle */
 			if (vhci_priv_tx_empty(vdev))
 				return;
 			pr_info("connection timed out with pending urbs\n");
-		} else if (ret != -ERESTARTSYS)
+		} else if (ret != -ERESTARTSYS){
 			pr_info("xmit failed %d\n", ret);
-
+		}
 		usbip_event_add(ud, VDEV_EVENT_ERROR_TCP);
 		return;
 	}
 	if (ret == 0) {
 		pr_info("connection closed");
+		printk(KERN_ALERT "connection closed");
 		usbip_event_add(ud, VDEV_EVENT_DOWN);
 		return;
 	}
@@ -257,13 +258,14 @@ static void vhci_rx_pdu(struct usbip_device *ud)
 int vhci_rx_loop(void *data)
 {
 	struct usbip_device *ud = data;
-
+	
 	while (!kthread_should_stop()) {
 		if (usbip_event_happened(ud))
 			break;
 
 		vhci_rx_pdu(ud);
 	}
+
 
 	return 0;
 }
